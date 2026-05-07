@@ -39,7 +39,7 @@ b)};c.useId=function(){return g.current.useId()};c.useImperativeHandle=function(
 c.useSyncExternalStore=function(a,b,c){return g.current.useSyncExternalStore(a,b,c)};c.useTransition=function(){return g.current.useTransition()};c.version="18.2.0"});
 })();
 </script>
-  <script>/**
+<script>/**
  * @license React
  * react-dom.production.min.js
  *
@@ -307,12 +307,7 @@ var d=null!=c&&c.hydratedSources||null,e=!1,f="",g=bj;null!==c&&void 0!==c&&(!0=
 function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmountComponentAtNode=function(a){if(!Vd(a))throw Error(n(40));return a._reactRootContainer?(zb(function(){Wd(null,null,a,!1,function(){a._reactRootContainer=null;a[Ja]=null})}),!0):!1};Q.unstable_batchedUpdates=Tf;Q.unstable_renderSubtreeIntoContainer=function(a,b,c,d){if(!Vd(c))throw Error(n(200));if(null==a||void 0===a._reactInternals)throw Error(n(38));return Wd(a,b,c,!1,d)};Q.version="18.2.0-next-9e3b772b8-20220608"});
 })();
 </script>
-  
-  <style>*, *::before, *::after{box-sizing:border-box;}html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#E2E8F0;-webkit-font-smoothing:antialiased;}input,select,textarea,button{font-family:inherit;}body{padding-bottom:env(safe-area-inset-bottom);}</style>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="text/javascript">
+<script type="text/javascript">
 const {
   useState,
   useEffect,
@@ -8245,7 +8240,7 @@ function buildDocHtml(doc, project, pitItems, sig) {
     <span>ben.eng.br</span>
   </div>`;
   body += `</div>`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"/><title>${doc.docNumber}</title><style>${PDF_CSS}<\/style><\/head><body>${body}<\/body><\/html>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"/><title>${doc.docNumber}<\/title><style>${PDF_CSS}<\/style><\/head><body>${body}<\/body><\/html>`;
 }
 function PDFView({
   doc,
@@ -8467,7 +8462,7 @@ function DataBook({
   const generateDataBook = () => {
     if (!selDocs.length) return;
     const win = window.open("", "_blank", "width=900,height=700");
-    win.document.write(`<!DOCTYPE html><html><head><title>Data Book — ${project.name}</title>
+    win.document.write(`<!DOCTYPE html><html><head><title>Data Book — ${project.name}<\/title>
     <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;font-size:11px;color:#1E293B;padding:15mm}.cover{text-align:center;padding:60px 20px;border:2px solid #1E3A5F;border-radius:8px;margin-bottom:20mm}.cover-title{font-size:28px;font-weight:800;color:#1E3A5F;margin-bottom:12px}.toc-item{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dotted #CBD5E1;font-size:12px}.doc-section{page-break-before:always;margin-bottom:12mm}h2{font-size:13px;color:#1E3A5F;margin:14px 0 6px;padding-bottom:4px;border-bottom:2px solid #1E3A5F}table{width:100%;border-collapse:collapse;margin-bottom:12px}th{background:#1E3A5F;color:#fff;padding:6px 8px;text-align:left;font-size:10px;border:1px solid #1E3A5F}td{padding:5px 8px;border:1px solid #E2E8F0;font-size:11px}.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:9px;font-weight:bold;text-transform:uppercase}img{max-height:120px;width:100%;object-fit:cover;border-radius:4px}@page{size:A4;margin:15mm}<\/style><\/head><body>`);
 
     // Cover page
@@ -11942,14 +11937,16 @@ function App() {
             const arr = await supa.from("users").select(sess.token, `auth_id=eq.${u.id}`);
             const profile = Array.isArray(arr) && arr.find(x => x.auth_id === u.id);
             if (!profile || !profile.name || profile.status === "pending") {
-              setFirstAccess({
-                authUser: {
-                  id: u.id,
-                  email: u.email
-                },
-                token: sess.token
-              });
-              setLoaded(true);
+              setTimeout(() => {
+                setFirstAccess({
+                  authUser: {
+                    id: u.id,
+                    email: u.email
+                  },
+                  token: sess.token
+                });
+                setLoaded(true);
+              }, 0);
               return;
             }
             const userObj = {
@@ -11987,13 +11984,13 @@ function App() {
       const profile = Array.isArray(arr) && arr.find(u => u.auth_id === userObj.id);
       if (!profile || !profile.name || profile.status === "pending") {
         // First access — need to complete profile
-        setFirstAccess({
+        setTimeout(() => setFirstAccess({
           authUser: {
             id: userObj.id,
             email: userObj.email
           },
           token: userObj.token
-        });
+        }), 0);
         return;
       }
       // Profile exists — merge and continue
@@ -12005,7 +12002,7 @@ function App() {
       setUser(fullUser);
       await loadData(userObj.token, userObj.refreshToken);
       // Show tour if first time (no projects yet)
-      if (!profile?.tourDone) setShowTour(true);
+      if (!profile?.tourDone) setTimeout(() => setShowTour(true), 100);
     } catch {
       // On error, just log in anyway
       setUser(userObj);
