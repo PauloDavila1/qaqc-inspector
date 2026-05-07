@@ -12217,6 +12217,11 @@ function App() {
   const pdfDoc = docs.find(d => d.id === pdfId);
   const showBN = !["edit", "pdf", "new-doc"].includes(scr);
   const pendingCount = docs.filter(d => d.pid === activeProjId && d.status === "Em preenchimento").length;
+
+  // ── This useEffect MUST be before any conditional returns ──
+  useEffect(() => {
+    if (scr !== "new-doc") setNewDocPitItem(null);
+  }, [scr]);
   if (!loaded) return /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
@@ -12252,11 +12257,6 @@ function App() {
   if (!user) return /*#__PURE__*/React.createElement(Login, {
     onLogin: login
   });
-
-  // Clear newDocPitItem when navigating away from new-doc
-  useEffect(() => {
-    if (scr !== "new-doc") setNewDocPitItem(null);
-  }, [scr]);
   const BACK_DEST = {
     "proj-dash": "proj",
     "docs": "proj-dash",
