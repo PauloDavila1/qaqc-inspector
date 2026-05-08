@@ -5,15 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="theme-color" content="#1E3A5F"/>
   <title>QA/QC Inspector</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F1F5F9; -webkit-font-smoothing: antialiased; }
-    input, select, textarea, button { font-family: inherit; }
-    body { padding-bottom: env(safe-area-inset-bottom); }
-  </style>
+  <style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#F1F5F9;-webkit-font-smoothing:antialiased}input,select,textarea,button{font-family:inherit}body{padding-bottom:env(safe-area-inset-bottom)}</style>
 </head>
 <body>
   <div id="root"></div>
@@ -318,14 +312,10 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
 })();
 </script>
   <script type="text/javascript">
-(function() {
-  // Ensure DOM is ready
-  function init() {
-    var container = document.getElementById('root');
-    if (!container) {
-      console.error('root element not found');
-      return;
-    }
+(function(){
+  function init(){
+    var el=document.getElementById('root');
+    if(!el){console.error('No root element');return;}
 const {
   useState,
   useEffect,
@@ -8855,8 +8845,9 @@ function FirstAccess({
     }
     setLoading(true);
     try {
+      // Use auth_id as the primary key to ensure profile is found on next login
       await supa.from("users").upsert(token, {
-        id: "u_" + authUser.id.slice(0, 8),
+        id: authUser.id,
         auth_id: authUser.id,
         name: name.trim(),
         email: authUser.email,
@@ -11953,7 +11944,7 @@ function App() {
         if (u?.id) {
           try {
             const arr = await supa.from("users").select(sess.token, `auth_id=eq.${u.id}`);
-            const profile = Array.isArray(arr) && arr.find(x => x.auth_id === u.id);
+            const profile = Array.isArray(arr) && (arr.find(x => x.auth_id === u.id) || arr.find(x => x.email === u.email));
             if (!profile || !profile.name || profile.status === "pending") {
               setTimeout(() => {
                 setFirstAccess({
@@ -11999,7 +11990,15 @@ function App() {
     // Check if profile exists — if not, show FirstAccess screen
     try {
       const arr = await supa.from("users").select(userObj.token, `auth_id=eq.${userObj.id}`);
-      const profile = Array.isArray(arr) && arr.find(u => u.auth_id === userObj.id);
+      const profile = Array.isArray(arr) && (arr.find(u => u.auth_id === userObj.id) || arr.find(u => u.email === userObj.email));
+      // Auto-fix: if profile found by email but auth_id missing, update it
+      if (profile && !profile.auth_id) {
+        supa.from("users").upsert(userObj.token, {
+          ...profile,
+          auth_id: userObj.id,
+          updated_at: new Date().toISOString()
+        }).catch(() => {});
+      }
       if (!profile || !profile.name || profile.status === "pending") {
         // First access — need to complete profile
         setTimeout(() => setFirstAccess({
@@ -12385,7 +12384,7 @@ function App() {
     docs: docs,
     onCreate: createDoc,
     initialPitItem: newDocPitItem
-  }), "}", scr === "edit" && editDoc && activeProject && /*#__PURE__*/React.createElement(DocEditor, {
+  }), scr === "edit" && editDoc && activeProject && /*#__PURE__*/React.createElement(DocEditor, {
     doc: editDoc,
     project: activeProject,
     user: user,
@@ -12423,11 +12422,7 @@ function App() {
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(/*#__PURE__*/React.createElement(App, null));
   }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',init);}else{init();}
 })();
   </script>
 </body>
