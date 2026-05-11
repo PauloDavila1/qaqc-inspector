@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="theme-color" content="#1E3A5F"/>
-  <title>QA/QC Inspector</title>
+  <title>QA/QC Inspector - V3</title>
   <style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#F1F5F9;-webkit-font-smoothing:antialiased}input,select,textarea,button{font-family:inherit}body{padding-bottom:env(safe-area-inset-bottom)}</style>
 </head>
 <body>
@@ -505,12 +505,13 @@ const ALL_PERMS = {
   view_analytics: "Ver analytics"
 };
 const ROLE_DEFAULT_PERMS = {
-  Técnico: ["fill_doc", "save_draft", "manage_pit"],
-  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "view_analytics", "manage_pit"],
+  Técnico: ["fill_doc", "save_draft"],
+  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "manage_pit", "view_analytics"],
   Administrador: Object.keys(ALL_PERMS)
 };
 const hasPerm = (user, p) => {
   if (user?.role === "Administrador") return true;
+  if (user?.role === "Engenheiro" && p === "manage_pit") return true;
   let perms = user?.perms || [];
   if (typeof perms === "string") {
     try {
@@ -521,6 +522,24 @@ const hasPerm = (user, p) => {
   }
   return Array.isArray(perms) && perms.includes(p);
 };
+
+// Busca perfil por auth_id e, se necessário, por e-mail. Evita que usuários existentes
+// sem auth_id fiquem presos na tela de primeiro acesso.
+async function findUserProfile(token, authId, email) {
+  const safeEmail = encodeURIComponent(email || "");
+  let arr = await supa.from("users").select(token, `or=(auth_id.eq.${authId},email.eq.${safeEmail})`);
+  if (!Array.isArray(arr) || arr.length === 0) {
+    arr = await supa.from("users").select(token, `auth_id=eq.${authId}`);
+  }
+  if ((!Array.isArray(arr) || arr.length === 0) && email) {
+    arr = await supa.from("users").select(token, `email=eq.${safeEmail}`);
+  }
+  return Array.isArray(arr) && (arr.find(x => x.auth_id === authId) || arr.find(x => (x.email || "").toLowerCase() === (email || "").toLowerCase()) || arr[0]);
+}
+
+function emailFallback(entity, fallback = "") {
+  return entity?.email || entity?.auth_email || entity?.user_email || fallback || "E-mail não informado";
+}
 
 // ── Section engine types ──
 const SECTION_COLORS = {
@@ -3389,13 +3408,12 @@ function Login({
       }
       const token = res.access_token;
       const supaUser = res.user;
-      // Load profile from users table
-      const profileArr = await supa.from("users").select(token, `auth_id=eq.${supaUser.id}`);
-      const profile = Array.isArray(profileArr) && profileArr[0];
+      // Load profile from users table using auth_id and e-mail fallback
+      const profile = await findUserProfile(token, supaUser.id, supaUser.email);
       const userObj = {
         id: supaUser.id,
-        name: profile?.name || supaUser.email.split("@")[0],
-        email: supaUser.email,
+        name: profile?.name || (supaUser.email || "").split("@")[0],
+        email: profile?.email || supaUser.email,
         role: profile?.role || "Engenheiro",
         crea: profile?.crea || "",
         perms: profile?.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -3888,7 +3906,64 @@ function ProjectDashboard({
       fontWeight: 600,
       textTransform: "uppercase"
     }
-  }, k.l)))), rfiOverdue > 0 && /*#__PURE__*/React.createElement(Card, {
+  }, k.l)))), inProgress.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(SecTitle, {
+    icon: "\u25B6\uFE0F"
+  }, "Continuar de onde parei"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 5,
+      marginBottom: 12
+    }
+  }, inProgress.map(d => {
+    const pct = calcProgress(d);
+    return /*#__PURE__*/React.createElement(Card, {
+      key: d.id,
+      onClick: () => onNav("edit", d.id),
+      style: {
+        padding: "10px 12px",
+        cursor: "pointer",
+        borderLeft: "3px solid #F59E0B"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        marginBottom: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 700,
+        fontSize: 12,
+        color: "#1E3A5F"
+      }
+    }, d.docNumber), d.objeto && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#475569",
+        marginTop: 1,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, d.objeto)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: pct === 100 ? "#10B981" : "#F59E0B",
+        marginLeft: 8,
+        flexShrink: 0
+      }
+    }, pct, "%")), /*#__PURE__*/React.createElement(ProgressBar, {
+      pct: pct
+    }));
+  }))), rfiOverdue > 0 && /*#__PURE__*/React.createElement(Card, {
     style: {
       marginBottom: 8,
       borderLeft: "3px solid #EF4444",
@@ -4483,7 +4558,8 @@ function PITModule({
   docs,
   user,
   onSave,
-  saveDoc
+  saveDoc,
+  onNewDocWithPIT
 }) {
   const pitItems = project.pitItems || [];
   const [expanded, setExpanded] = useState({});
@@ -4504,6 +4580,9 @@ function PITModule({
     obs: ""
   });
   const [toast, setToast] = useState("");
+  // Correção: PITModule usava showTour/setShowTour sem declarar ou receber via props.
+  // Isso quebrava a renderização do módulo e deixava o PIT em branco.
+  const [showTour, setShowTour] = useState(false);
   const [viewMode, setViewMode] = useState("list"); // "list" | "matrix" | "pending"
   const myDocs = docs.filter(d => d.pid === project.id);
   const getItemStatus = item => {
@@ -5117,7 +5196,9 @@ function PITModule({
     style: {
       padding: 14
     }
-  }, toast && /*#__PURE__*/React.createElement(Toast, {
+  }, showTour && /*#__PURE__*/React.createElement(FirstUseTour, {
+    onDone: () => setShowTour(false)
+  }), toast && /*#__PURE__*/React.createElement(Toast, {
     msg: toast,
     onClose: () => setToast("")
   }), /*#__PURE__*/React.createElement("div", {
@@ -5566,13 +5647,18 @@ function PITModule({
           fontStyle: "italic",
           marginBottom: 6
         }
-      }, it.obs), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement("div", {
+      }, it.obs), (hasPerm(user, "fill_doc") || hasPerm(user, "manage_pit")) && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
-          marginTop: 4
+          marginTop: 4,
+          flexWrap: "wrap"
         }
-      }, /*#__PURE__*/React.createElement(Btn, {
+      }, hasPerm(user, "fill_doc") && /*#__PURE__*/React.createElement(Btn, {
+        sm: true,
+        v: "g",
+        onClick: () => onNewDocWithPIT && onNewDocWithPIT(it)
+      }, "＋ Criar doc"), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement(Btn, {
         sm: true,
         v: "s",
         onClick: () => {
@@ -5587,11 +5673,11 @@ function PITModule({
           });
           setAddingItem(false);
         }
-      }, "\u270F\uFE0F Editar"), /*#__PURE__*/React.createElement(Btn, {
+      }, "\u270F\uFE0F Editar"), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement(Btn, {
         sm: true,
         v: "d",
         onClick: () => deleteItem(it._key || it.id)
-      }, "\uD83D\uDDD1 Remover")));
+      }, "\uD83D\uDDD1 Excluir")));
     }));
   })), editItem && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -8755,7 +8841,7 @@ function FirstAccess({
         id: authUser.id,
         auth_id: authUser.id,
         name: name.trim(),
-        email: authUser.email,
+        email: authUser.email || emailFallback(authUser),
         role: "Engenheiro",
         crea: crea.trim(),
         perms: ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -8764,7 +8850,7 @@ function FirstAccess({
       onComplete({
         id: authUser.id,
         name: name.trim(),
-        email: authUser.email,
+        email: authUser.email || emailFallback(authUser),
         role: "Engenheiro",
         crea: crea.trim(),
         perms: ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -8865,7 +8951,7 @@ function UserManager({
     setLoading(true);
     try {
       const arr = await supa.from("users").select(token);
-      if (Array.isArray(arr)) setUsers(arr);
+      if (Array.isArray(arr)) setUsers(arr.map(u => ({ ...u, email: emailFallback(u) })));
     } catch {}
     setLoading(false);
   };
@@ -8956,7 +9042,7 @@ function UserManager({
       color: "#64748B",
       marginTop: 2
     }
-  }, sel.email), sel.crea && /*#__PURE__*/React.createElement("div", {
+  }, emailFallback(sel)), sel.crea && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#94A3B8",
@@ -9197,7 +9283,7 @@ function UserManager({
       color: "#64748B",
       marginTop: 1
     }
-  }, u.email), /*#__PURE__*/React.createElement("div", {
+  }, emailFallback(u)), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#94A3B8",
@@ -11848,8 +11934,7 @@ function App() {
       supa.auth.getUser(sess.token).then(async u => {
         if (u?.id) {
           try {
-            const arr = await supa.from("users").select(sess.token, `auth_id=eq.${u.id}`);
-            const profile = Array.isArray(arr) && (arr.find(x => x.auth_id === u.id) || arr.find(x => x.email === u.email));
+            const profile = await findUserProfile(sess.token, u.id, u.email);
             if (!profile || !profile.name || profile.status === "pending") {
               setTimeout(() => {
                 setFirstAccess({
@@ -11866,7 +11951,7 @@ function App() {
             const userObj = {
               id: u.id,
               name: profile.name,
-              email: u.email,
+              email: profile.email || u.email,
               role: profile.role || "Engenheiro",
               crea: profile.crea || "",
               perms: profile.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -11894,8 +11979,7 @@ function App() {
   const login = async userObj => {
     // Check if profile exists — if not, show FirstAccess screen
     try {
-      const arr = await supa.from("users").select(userObj.token, `auth_id=eq.${userObj.id}`);
-      const profile = Array.isArray(arr) && (arr.find(u => u.auth_id === userObj.id) || arr.find(u => u.email === userObj.email));
+      const profile = await findUserProfile(userObj.token, userObj.id, userObj.email);
       // Auto-fix: if profile found by email but auth_id missing, update it
       if (profile && !profile.auth_id) {
         supa.from("users").upsert(userObj.token, {
@@ -11919,6 +12003,7 @@ function App() {
       const fullUser = {
         ...userObj,
         ...profile,
+        email: profile?.email || userObj.email,
         token: userObj.token
       };
       setUser(fullUser);
@@ -12262,7 +12347,8 @@ function App() {
     docs: docs,
     user: user,
     onSave: saveProject,
-    saveDoc: saveDoc
+    saveDoc: saveDoc,
+    onNewDocWithPIT: onNewDocWithPIT
   }), scr === "databook" && activeProject && /*#__PURE__*/React.createElement(DataBook, {
     project: activeProject,
     docs: docs,
