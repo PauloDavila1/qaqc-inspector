@@ -875,7 +875,7 @@ const SEED_PROJECTS = [{
   id: "p1",
   name: "SISGAAZ – Farol de Castelhanos",
   client: "Marinha do Brasil",
-  location: "Ilha de Castelhanos, ES",
+  location: "Farol de Castelhanos, Ilha Grande, Angra dos Reis/RJ",
   description: "Sistema de gerenciamento da Amazônia Azul",
   docCounters: {}
 }, {
@@ -1298,10 +1298,49 @@ const localStore = {
 
 // Generate sequential doc number: "SISGAAZ-R02-001 Rev.00"
 function generateDocNumber(project, docCode, existingDocs) {
-  const prefix = project.name.split(/[\s–—-]/)[0].toUpperCase().slice(0, 8);
+  const prefix = (project.name || "SISGAAZ").split(/[\s–—-]/)[0].toUpperCase().slice(0, 8);
   const sameType = existingDocs.filter(d => d.pid === project.id && d.code === docCode);
-  const seq = String(sameType.length + 1).padStart(3, "0");
+  const maxSeq = sameType.reduce((max, d) => {
+    const m = String(d.docNumber || "").match(new RegExp(`${docCode}-(\\d{3,})`));
+    return Math.max(max, m ? parseInt(m[1], 10) : 0);
+  }, 0);
+  const seq = String(maxSeq + 1).padStart(3, "0");
   return `${prefix}-${docCode}-${seq}`;
+}
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+function hasOpenNCs(doc) {
+  const legacyOpen = (doc.ncs || []).some(n => (n.desc || n.action || n.acao) && n.ncstatus !== "Fechada");
+  const blockOpen = Object.values(doc.sectionData || {}).some(sd => (sd?.rows || []).some(r => (r.desc || r.acao || r.action) && r.ncstatus !== "Fechada"));
+  return legacyOpen || blockOpen;
+}
+function getTechnicalIssues(doc) {
+  const issues = [];
+  const pct = calcProgress(doc);
+  if (pct < 100) issues.push(`preenchimento incompleto (${pct}%)`);
+  if (!doc.resp) issues.push("responsável técnico não informado");
+  if (!doc.date) issues.push("data não informada");
+  if (!doc.objeto) issues.push("objeto/local de inspeção não informado");
+  if (hasOpenNCs(doc)) issues.push("há não conformidade ou ponto de atenção em aberto");
+  const sectionData = Object.values(doc.sectionData || {});
+  const hasBadChecklist = sectionData.some(sd => (sd?.rows || []).some(r => ["Não conforme", "Ajustar", "Reprovado", "Não atendido"].includes(r.status) || r.atendido === "Não" || r.res === "Não conforme"));
+  if (hasBadChecklist) issues.push("existem itens de checklist/medição não conformes ou a ajustar");
+  const concl = doc.concl?.result || sectionData.find(sd => sd?.selected?.length > 0)?.selected?.[0] || "";
+  if (!concl) issues.push("conclusão técnica não selecionada");
+  if (concl && !/conforme|aprovado|completo/i.test(concl)) issues.push("conclusão técnica não é favorável");
+  return issues;
+}
+function canComplete(doc) {
+  return getTechnicalIssues(doc).length === 0;
+}
+function canApprove(doc) {
+  return canComplete(doc);
 }
 function initSectionData(sec) {
   switch (sec.type) {
@@ -4628,7 +4667,7 @@ function PITModule({
       emitted: []
     };
     const itKey = item._key || item.id;
-    const approved = myDocs.filter(d => ["Aprovado", "PDF gerado"].includes(d.status) && ((d.pitRefs || []).includes(itKey) || (d.pitRefs || []).includes(item.id) || item.docs.includes(d.code)));
+    const approved = myDocs.filter(d => ["Aprovado", "PDF gerado"].includes(d.status) && ((d.pitRefs || []).includes(itKey) || (d.pitRefs || []).includes(item.id)));
     const emitted = myDocs.filter(d => d.code && item.docs.includes(d.code));
     const covered = item.docs.filter(code => approved.some(d => d.code === code));
     const pct = Math.round(covered.length / item.docs.length * 100);
@@ -5231,9 +5270,7 @@ function PITModule({
     style: {
       padding: 14
     }
-  }, showTour && /*#__PURE__*/React.createElement(FirstUseTour, {
-    onDone: () => setShowTour(false)
-  }), toast && /*#__PURE__*/React.createElement(Toast, {
+  }, toast && /*#__PURE__*/React.createElement(Toast, {
     msg: toast,
     onClose: () => setToast("")
   }), /*#__PURE__*/React.createElement("div", {
@@ -7164,20 +7201,31 @@ function DocEditor({
       [id]: data
     }
   });
-  const save = (st, silent) => {
+  const save = async (st, silent) => {
     const prev = d.status;
     let next = st || prev;
+    const current = { ...d };
+    const issues = getTechnicalIssues(current);
     if (!st) {
-      const pctNow = calcProgress({
-        ...d
-      });
-      if (prev === "Rascunho") next = "Em preenchimento";else if (prev === "Em preenchimento" && pctNow >= 100) next = "Completo";else if (prev === "Completo" && pctNow < 100) next = "Em preenchimento";
+      const pctNow = calcProgress(current);
+      if (prev === "Rascunho") next = "Em preenchimento";
+      else if (prev === "Em preenchimento" && pctNow >= 100 && issues.length === 0) next = "Completo";
+      else if (prev === "Completo" && issues.length > 0) next = "Em preenchimento";
+    }
+    if (next === "Completo" && !canComplete(current)) {
+      setToast("⚠️ Não é possível concluir: " + issues.join("; "));
+      return false;
+    }
+    if (next === "Aprovado" && !canApprove(current)) {
+      setToast("⚠️ Não é possível aprovar: " + issues.join("; "));
+      return false;
     }
     const hist = next !== prev ? [...(d.history || []), {
       from: prev,
       to: next,
       by: user.name,
-      at: new Date().toISOString()
+      at: new Date().toISOString(),
+      issues: issues
     }] : d.history || [];
     const u = {
       ...d,
@@ -7187,14 +7235,18 @@ function DocEditor({
     };
     setSaveStatus("saving");
     try {
-      onSave(u);
+      await onSave(u);
       sd(u);
       setDirty(false);
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 3000);
-      if (!silent && !st && next === "Completo") setToast("✅ Documento completo!");
+      if (!silent && !st && next === "Completo") setToast("✅ Documento completo e tecnicamente validado!");
+      return true;
     } catch (e) {
+      console.error("Falha ao salvar documento", e);
       setSaveStatus("offline");
+      setToast("⚠️ Falha ao salvar no banco. Verifique conexão/Supabase.");
+      return false;
     }
   };
   useEffect(() => {
@@ -7225,9 +7277,9 @@ function DocEditor({
   };
   const confirmDialogs = /*#__PURE__*/React.createElement(React.Fragment, null, cApprove && /*#__PURE__*/React.createElement(Confirm, {
     msg: "Aprovar este documento? Ficar\xE1 bloqueado para edi\xE7\xE3o.",
-    onYes: () => {
-      save("Aprovado");
-      setCA(false);
+    onYes: async () => {
+      const ok = await save("Aprovado");
+      if (ok) setCA(false);
     },
     onNo: () => setCA(false)
   }), cReview && /*#__PURE__*/React.createElement(Confirm, {
@@ -8049,10 +8101,10 @@ const PDF_CSS = `
   }
 `;
 function bdg(text, color) {
-  return `<span class="bdg" style="background:${color}22;color:${color};border:1px solid ${color}44">${text}</span>`;
+  return `<span class="bdg" style="background:${color}22;color:${color};border:1px solid ${color}44">${escapeHtml(text || "—")}</span>`;
 }
 function blockToPdfHtml(block, data) {
-  const fv = v => v || "—";
+  const fv = v => escapeHtml(v || "—");
   const sc = s => s === "Conforme" ? "#10B981" : s === "Não conforme" ? "#EF4444" : "#9E9E9E";
   switch (block.type) {
     case "texto_livre":
@@ -8143,13 +8195,13 @@ function buildDocHtml(doc, project, pitItems, sig) {
   const rev = `Rev.${String(doc.revision || 0).padStart(2, "0")}`;
   const linkedPit = (pitItems || []).filter(it => (doc.pitRefs || []).includes(it._key || it.id) || (doc.pitRefs || []).includes(it.id));
   const tc = s => STATUS_COLORS[s] || "#6B7280";
-  const fv = v => v || "—";
+  const fv = v => escapeHtml(v || "—");
   let body = `<div class="page">`;
   // Header
   body += `<div class="hdr">
     <div class="hdr-logo"><img src="${LOGO_BEN}" alt="BEN"/></div>
     <div class="hdr-center">
-      <div class="dn">${doc.docNumber}</div>
+      <div class="dn">${fv(doc.docNumber)}</div>
       <div class="nm">${fv(doc.name || MASTER_DOCS[doc.code]?.name)}${doc.objeto ? ` &nbsp;·&nbsp; <strong>${doc.objeto}</strong>` : ""}</div>
       <div class="pj">${fv(project?.name)} &nbsp;·&nbsp; ${fv(project?.client)} &nbsp;·&nbsp; ${fv(project?.location)}${doc.locRef ? ` &nbsp;·&nbsp; ${doc.locRef}` : ""}</div>
     </div>
@@ -8175,7 +8227,7 @@ function buildDocHtml(doc, project, pitItems, sig) {
       if (block.type === "identificacao") return;
       const sd = (doc.sectionData || {})[block.id];
       if (!sd) return;
-      body += `<div class="sec">${block.title}</div>`;
+      body += `<div class="sec">${fv(block.title)}</div>`;
       body += blockToPdfHtml(block, sd);
     });
   } else {
@@ -8248,7 +8300,7 @@ function buildDocHtml(doc, project, pitItems, sig) {
     <span>ben.eng.br</span>
   </div>`;
   body += `</div>`;
-  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"/><title>${doc.docNumber}<\/title><style>${PDF_CSS}<\/style><\/head><body>${body}<\/body><\/html>`;
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"/><title>${fv(doc.docNumber)}<\/title><style>${PDF_CSS}<\/style><\/head><body>${body}<\/body><\/html>`;
 }
 function PDFView({
   doc,
@@ -8267,13 +8319,19 @@ function PDFView({
       sig
     }
   }, project, pitItems, sig);
-  const handlePrint = () => {
+  const handlePrint = async () => {
     const html = getHtml();
     const win = window.open("", "_blank", "width=960,height=800");
+    if (!win) {
+      alert("O navegador bloqueou a janela de impressão. Libere pop-ups para este APP.");
+      return;
+    }
     win.document.write(html);
     win.document.close();
     setTimeout(() => win.print(), 800);
-    if (onGenerated) onGenerated();
+    if (onGenerated) {
+      await onGenerated({ sig, generatedAt: new Date().toISOString() });
+    }
   };
   if (previewing) return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -12103,9 +12161,11 @@ function App() {
         locRef: d.locRef || "",
         updated_at: new Date().toISOString()
       });
-      if (res?.error || res?.message) console.error("createDoc error:", res);
+      if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao criar documento");
     } catch (e) {
       console.error("createDoc catch:", e);
+      setDocs(p => p.filter(x => x.id !== d.id));
+      throw e;
     }
   };
   const saveDoc = async d => {
@@ -12144,9 +12204,10 @@ function App() {
         locRef: d.locRef || "",
         updated_at: new Date().toISOString()
       });
-      if (res?.error || res?.message) console.error("saveDoc error:", res);
+      if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao salvar documento");
     } catch (e) {
       console.error("saveDoc catch:", e);
+      throw e;
     }
   };
   const deleteDoc = async id => {
@@ -12398,9 +12459,21 @@ function App() {
     doc: pdfDoc,
     project: activeProject,
     pitItems: activeProject.pitItems || [],
-    onGenerated: () => saveDoc({
+    onGenerated: meta => saveDoc({
       ...pdfDoc,
-      status: "PDF gerado"
+      status: "PDF gerado",
+      concl: {
+        ...(pdfDoc.concl || {}),
+        sig: meta?.sig || pdfDoc.concl?.sig || ""
+      },
+      pdfGeneratedAt: meta?.generatedAt || new Date().toISOString(),
+      history: [...(pdfDoc.history || []), {
+        from: pdfDoc.status,
+        to: "PDF gerado",
+        by: user.name,
+        at: meta?.generatedAt || new Date().toISOString(),
+        note: "PDF enviado para impressão/salvamento pelo navegador"
+      }]
     })
   }), scr === "templates" && hasPerm(user, "manage_templates") && /*#__PURE__*/React.createElement(TemplateEditor, {
     templates: templates,
