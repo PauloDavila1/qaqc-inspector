@@ -397,6 +397,31 @@ const supa = {
     }
   },
   // Generic table operations
+  // V5: resposta REST robusta. Antes o APP tratava muitos erros reais do Supabase
+  // como simples "falta de conexão". Agora o erro HTTP/REST é preservado para diagnóstico.
+  _parse: async r => {
+    const text = await r.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text || null;
+    }
+    if (!r.ok) {
+      const msg = body?.message || body?.error_description || body?.error || (typeof body === "string" ? body : "") || r.statusText || `HTTP ${r.status}`;
+      return {
+        error: {
+          status: r.status,
+          code: body?.code || "HTTP_ERROR",
+          message: msg,
+          details: body?.details || body?.hint || ""
+        },
+        message: msg,
+        status: r.status
+      };
+    }
+    return body ?? [];
+  },
   from: table => ({
     select: async (token, filter = "") => {
       const url = filter ? `${SUPA_URL}/rest/v1/${table}?${filter}` : `${SUPA_URL}/rest/v1/${table}?order=updated_at.desc`;
@@ -404,32 +429,39 @@ const supa = {
         headers: {
           "apikey": SUPA_KEY,
           "Authorization": `Bearer ${token}`,
-          "Accept": "application/json"
+          "Accept": "application/json",
+          "Accept-Profile": "public"
         }
       });
-      return r.json();
+      return supa._parse(r);
     },
     upsert: async (token, data) => {
-      const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
+      const r = await fetch(`${SUPA_URL}/rest/v1/${table}?on_conflict=id`, {
         method: "POST",
         headers: {
           "apikey": SUPA_KEY,
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Accept-Profile": "public",
+          "Content-Profile": "public",
           "Prefer": "resolution=merge-duplicates,return=representation"
         },
         body: JSON.stringify(data)
       });
-      return r.json();
+      return supa._parse(r);
     },
     delete: async (token, id) => {
-      await fetch(`${SUPA_URL}/rest/v1/${table}?id=eq.${id}`, {
+      const r = await fetch(`${SUPA_URL}/rest/v1/${table}?id=eq.${id}`, {
         method: "DELETE",
         headers: {
           "apikey": SUPA_KEY,
-          "Authorization": `Bearer ${token}`
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+          "Accept-Profile": "public"
         }
       });
+      return supa._parse(r);
     }
   })
 };
@@ -7122,6 +7154,7 @@ function DocEditor({
   user,
   pitItems,
   onSave,
+  onDelete,
   onBack
 }) {
   const [d, sd] = useState(doc);
@@ -7134,6 +7167,7 @@ function DocEditor({
   const [cApprove, setCA] = useState(false);
   const [cReview, setCR] = useState(false);
   const [cNewRev, setCNR] = useState(false);
+  const [cDelete, setCDelete] = useState(false);
   const autoSaveRef = useRef(null);
   const isLocked = ["Aprovado", "PDF gerado"].includes(d.status);
   const up = patch => {
@@ -7194,7 +7228,7 @@ function DocEditor({
     } catch (e) {
       console.error("Falha ao salvar documento", e);
       setSaveStatus("offline");
-      setToast("⚠️ Falha ao salvar no banco. Verifique conexão/Supabase.");
+      setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
       return false;
     }
   };
@@ -7240,23 +7274,65 @@ function DocEditor({
     onNo: () => setCR(false)
   }), cNewRev && /*#__PURE__*/React.createElement(Confirm, {
     msg: `Criar Rev.${String((d.revision || 0) + 1).padStart(2, "0")}?`,
-    onYes: () => {
+    onYes: async () => {
+      const now = new Date().toISOString();
+      const nextRev = (d.revision || 0) + 1;
       const nr = {
         ...d,
         id: "d" + uid(),
-        revision: (d.revision || 0) + 1,
+        revision: nextRev,
         status: "Rascunho",
-        history: [],
+        pdfGeneratedAt: null,
+        updatedAt: now,
+        createdAt: now,
+        concl: {
+          ...(d.concl || {}),
+          sig: ""
+        },
+        history: [{
+          from: d.status,
+          to: "Rascunho",
+          by: user.name,
+          at: now,
+          note: `Nova revisão criada a partir da Rev.${String(d.revision || 0).padStart(2, "0")}`
+        }],
         revisionHistory: [...(d.revisionHistory || []), {
           rev: d.revision,
-          at: new Date().toISOString()
-        }]
+          status: d.status,
+          at: now,
+          originalId: d.id
+        }],
+        _localOnly: false
       };
-      onSave(nr);
-      sd(nr);
-      setCNR(false);
+      setSaveStatus("saving");
+      try {
+        await onSave(nr);
+        sd(nr);
+        setDirty(false);
+        setSaveStatus("saved");
+        setToast(`✅ Rev.${String(nextRev).padStart(2, "0")} criada. Documento liberado para edição.`);
+        setCNR(false);
+        setTimeout(() => setSaveStatus("idle"), 3000);
+      } catch (e) {
+        console.error("new revision catch:", e);
+        setSaveStatus("offline");
+        setToast("⚠️ Não foi possível criar a nova revisão: " + (e?.message || "verifique console"));
+      }
     },
     onNo: () => setCNR(false)
+  }), cDelete && /*#__PURE__*/React.createElement(Confirm, {
+    msg: `Excluir definitivamente ${d.docNumber} ${rev}?`,
+    onYes: async () => {
+      try {
+        if (onDelete) await onDelete(d.id);
+        setCDelete(false);
+        onBack();
+      } catch (e) {
+        console.error("delete from editor catch:", e);
+        setToast("⚠️ Não foi possível excluir: " + (e?.message || "verifique console"));
+      }
+    },
+    onNo: () => setCDelete(false)
   }));
 
   // ── LEGACY MODEL (docs antigos sem blocks[]) ──
@@ -11910,6 +11986,12 @@ function App() {
     }
     try {
       const [projs, ds, tpls] = await Promise.all([supa.from("projects").select(token), supa.from("documents").select(token), supa.from("templates").select(token)]);
+      [projs, ds, tpls].forEach(res => {
+        if (res?.error) console.error("Supabase load error:", res.error);
+      });
+      if (projs?.error || ds?.error || tpls?.error) {
+        setToast("⚠️ Supabase retornou erro ao carregar dados. Veja o console do navegador.");
+      }
       if (Array.isArray(projs)) {
         const sanitized = projs.map(p => ({
           ...p,
@@ -12086,6 +12168,7 @@ function App() {
     cont: d.cont || [],
     vis: d.vis || [],
     ncs: d.ncs || [],
+    att: d.att || [],
     concl: d.concl || {},
     "pitRefs": d.pitRefs || [],
     history: d.history || [],
@@ -12115,12 +12198,15 @@ function App() {
     if (token) {
       try {
         const res = await supa.from("documents").upsert(token, documentPayload(d));
-        if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao criar documento");
+        if (res?.error || res?.message) {
+          const detail = res?.error?.details ? ` — ${res.error.details}` : "";
+          throw new Error((res.error?.message || res.message || "Erro ao criar documento") + detail);
+        }
         persisted = true;
       } catch (e) {
         console.error("createDoc catch:", e);
         backupLocalDoc(d);
-        setToast("⚠️ Falha ao salvar no Supabase. Rascunho mantido localmente.");
+        setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
       }
     } else {
       console.error("No token");
@@ -12143,13 +12229,16 @@ function App() {
     }
     try {
       const res = await supa.from("documents").upsert(token, documentPayload(d));
-      if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao salvar documento");
+      if (res?.error || res?.message) {
+        const detail = res?.error?.details ? ` — ${res.error.details}` : "";
+        throw new Error((res.error?.message || res.message || "Erro ao salvar documento") + detail);
+      }
       setDocs(p => p.map(x => x.id === d.id ? { ...d, _localOnly: false } : x));
     } catch (e) {
       console.error("saveDoc catch:", e);
       backupLocalDoc(d);
       setDocs(p => p.map(x => x.id === d.id ? { ...d, _localOnly: true } : x));
-      setToast("⚠️ Falha ao salvar no Supabase. Alterações mantidas localmente.");
+      setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
       throw e;
     }
   };
@@ -12395,6 +12484,7 @@ function App() {
     user: user,
     pitItems: activeProject.pitItems || [],
     onSave: saveDoc,
+    onDelete: deleteDoc,
     onBack: () => {
       setScr("docs");
       setEditId(null);
