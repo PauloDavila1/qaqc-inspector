@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="theme-color" content="#1E3A5F"/>
-  <title>QA/QC Inspector - V3</title>
+  <title>QA/QC Inspector</title>
   <style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#F1F5F9;-webkit-font-smoothing:antialiased}input,select,textarea,button{font-family:inherit}body{padding-bottom:env(safe-area-inset-bottom)}</style>
 </head>
 <body>
@@ -397,31 +397,6 @@ const supa = {
     }
   },
   // Generic table operations
-  // V5: resposta REST robusta. Antes o APP tratava muitos erros reais do Supabase
-  // como simples "falta de conexão". Agora o erro HTTP/REST é preservado para diagnóstico.
-  _parse: async r => {
-    const text = await r.text();
-    let body = null;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = text || null;
-    }
-    if (!r.ok) {
-      const msg = body?.message || body?.error_description || body?.error || (typeof body === "string" ? body : "") || r.statusText || `HTTP ${r.status}`;
-      return {
-        error: {
-          status: r.status,
-          code: body?.code || "HTTP_ERROR",
-          message: msg,
-          details: body?.details || body?.hint || ""
-        },
-        message: msg,
-        status: r.status
-      };
-    }
-    return body ?? [];
-  },
   from: table => ({
     select: async (token, filter = "") => {
       const url = filter ? `${SUPA_URL}/rest/v1/${table}?${filter}` : `${SUPA_URL}/rest/v1/${table}?order=updated_at.desc`;
@@ -429,39 +404,32 @@ const supa = {
         headers: {
           "apikey": SUPA_KEY,
           "Authorization": `Bearer ${token}`,
-          "Accept": "application/json",
-          "Accept-Profile": "public"
+          "Accept": "application/json"
         }
       });
-      return supa._parse(r);
+      return r.json();
     },
     upsert: async (token, data) => {
-      const r = await fetch(`${SUPA_URL}/rest/v1/${table}?on_conflict=id`, {
+      const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
         method: "POST",
         headers: {
           "apikey": SUPA_KEY,
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Accept-Profile": "public",
-          "Content-Profile": "public",
           "Prefer": "resolution=merge-duplicates,return=representation"
         },
         body: JSON.stringify(data)
       });
-      return supa._parse(r);
+      return r.json();
     },
     delete: async (token, id) => {
-      const r = await fetch(`${SUPA_URL}/rest/v1/${table}?id=eq.${id}`, {
+      await fetch(`${SUPA_URL}/rest/v1/${table}?id=eq.${id}`, {
         method: "DELETE",
         headers: {
           "apikey": SUPA_KEY,
-          "Authorization": `Bearer ${token}`,
-          "Accept": "application/json",
-          "Accept-Profile": "public"
+          "Authorization": `Bearer ${token}`
         }
       });
-      return supa._parse(r);
     }
   })
 };
@@ -537,13 +505,15 @@ const ALL_PERMS = {
   view_analytics: "Ver analytics"
 };
 const ROLE_DEFAULT_PERMS = {
-  Técnico: ["fill_doc", "save_draft"],
-  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "manage_pit", "view_analytics"],
+  Técnico: ["fill_doc", "save_draft", "sign_doc", "generate_pdf", "manage_pit"],
+  Supervisor: ["fill_doc", "save_draft", "sign_doc", "generate_pdf", "manage_pit"],
+  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "view_analytics", "manage_pit"],
+  Gestor: Object.keys(ALL_PERMS),
   Administrador: Object.keys(ALL_PERMS)
 };
+const APP_ROLES = ["Técnico", "Supervisor", "Engenheiro", "Gestor"];
 const hasPerm = (user, p) => {
-  if (user?.role === "Administrador") return true;
-  if (user?.role === "Engenheiro" && p === "manage_pit") return true;
+  if (user?.role === "Gestor" || user?.role === "Administrador") return true;
   let perms = user?.perms || [];
   if (typeof perms === "string") {
     try {
@@ -554,24 +524,6 @@ const hasPerm = (user, p) => {
   }
   return Array.isArray(perms) && perms.includes(p);
 };
-
-// Busca perfil por auth_id e, se necessário, por e-mail. Evita que usuários existentes
-// sem auth_id fiquem presos na tela de primeiro acesso.
-async function findUserProfile(token, authId, email) {
-  const safeEmail = encodeURIComponent(email || "");
-  let arr = await supa.from("users").select(token, `or=(auth_id.eq.${authId},email.eq.${safeEmail})`);
-  if (!Array.isArray(arr) || arr.length === 0) {
-    arr = await supa.from("users").select(token, `auth_id=eq.${authId}`);
-  }
-  if ((!Array.isArray(arr) || arr.length === 0) && email) {
-    arr = await supa.from("users").select(token, `email=eq.${safeEmail}`);
-  }
-  return Array.isArray(arr) && (arr.find(x => x.auth_id === authId) || arr.find(x => (x.email || "").toLowerCase() === (email || "").toLowerCase()) || arr[0]);
-}
-
-function emailFallback(entity, fallback = "") {
-  return entity?.email || entity?.auth_email || entity?.user_email || fallback || "E-mail não informado";
-}
 
 // ── Section engine types ──
 const SECTION_COLORS = {
@@ -611,8 +563,8 @@ const SECTION_LABELS = {
   laudos_ext: "Laudos Externos"
 };
 
-// ── Master document library ──
-const MASTER_DOCS = {
+// ── Master document library (fallback local — sobrescrito pelo catálogo do banco) ──
+let MASTER_DOCS = {
   R01: {
     code: "R01",
     type: "R",
@@ -3440,12 +3392,13 @@ function Login({
       }
       const token = res.access_token;
       const supaUser = res.user;
-      // Load profile from users table using auth_id and e-mail fallback
-      const profile = await findUserProfile(token, supaUser.id, supaUser.email);
+      // Load profile from users table
+      const profileArr = await supa.from("users").select(token, `auth_id=eq.${supaUser.id}`);
+      const profile = Array.isArray(profileArr) && profileArr[0];
       const userObj = {
         id: supaUser.id,
-        name: profile?.name || (supaUser.email || "").split("@")[0],
-        email: profile?.email || supaUser.email,
+        name: profile?.name || supaUser.email.split("@")[0],
+        email: supaUser.email,
         role: profile?.role || "Engenheiro",
         crea: profile?.crea || "",
         perms: profile?.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -3938,64 +3891,7 @@ function ProjectDashboard({
       fontWeight: 600,
       textTransform: "uppercase"
     }
-  }, k.l)))), inProgress.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(SecTitle, {
-    icon: "\u25B6\uFE0F"
-  }, "Continuar de onde parei"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 5,
-      marginBottom: 12
-    }
-  }, inProgress.map(d => {
-    const pct = calcProgress(d);
-    return /*#__PURE__*/React.createElement(Card, {
-      key: d.id,
-      onClick: () => onNav("edit", d.id),
-      style: {
-        padding: "10px 12px",
-        cursor: "pointer",
-        borderLeft: "3px solid #F59E0B"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "flex-start",
-        marginBottom: 6
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        minWidth: 0
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontWeight: 700,
-        fontSize: 12,
-        color: "#1E3A5F"
-      }
-    }, d.docNumber), d.objeto && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "#475569",
-        marginTop: 1,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, d.objeto)), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 12,
-        fontWeight: 700,
-        color: pct === 100 ? "#10B981" : "#F59E0B",
-        marginLeft: 8,
-        flexShrink: 0
-      }
-    }, pct, "%")), /*#__PURE__*/React.createElement(ProgressBar, {
-      pct: pct
-    }));
-  }))), rfiOverdue > 0 && /*#__PURE__*/React.createElement(Card, {
+  }, k.l)))), rfiOverdue > 0 && /*#__PURE__*/React.createElement(Card, {
     style: {
       marginBottom: 8,
       borderLeft: "3px solid #EF4444",
@@ -4590,12 +4486,13 @@ function PITModule({
   docs,
   user,
   onSave,
-  saveDoc,
-  onNewDocWithPIT
+  saveDoc
 }) {
   const pitItems = project.pitItems || [];
   const [expanded, setExpanded] = useState({});
   const [editItem, setEditItem] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importText, setImportText] = useState("");
   const [addingItem, setAddingItem] = useState(false);
   const [nItem, setNItem] = useState({
     id: "",
@@ -4612,9 +4509,6 @@ function PITModule({
     obs: ""
   });
   const [toast, setToast] = useState("");
-  // Correção: PITModule usava showTour/setShowTour sem declarar ou receber via props.
-  // Isso quebrava a renderização do módulo e deixava o PIT em branco.
-  const [showTour, setShowTour] = useState(false);
   const [viewMode, setViewMode] = useState("list"); // "list" | "matrix" | "pending"
   const myDocs = docs.filter(d => d.pid === project.id);
   const getItemStatus = item => {
@@ -4706,6 +4600,42 @@ function PITModule({
     });
     setToast("🗑 Removido");
   };
+  const doImport = () => {
+    const rows = importText.split("\n").map(r => r.split("\t")).filter(r => r.length >= 2 && r[0].trim());
+    const newItems = [];
+    let skipped = 0;
+    rows.forEach(cols => {
+      const id = (cols[0] || "").trim();
+      const title = (cols[1] || "").trim();
+      // Skip headers and section titles
+      if (!id || id.toLowerCase() === "id" || !title) { skipped++; return; }
+      if (title.toLowerCase().includes("apenas título") || (cols[6] || "").toLowerCase().includes("apenas título")) { skipped++; return; }
+      const fat = (cols[2] || "---").trim() || "---";
+      const taa = (cols[3] || "---").trim() || "---";
+      const tao = (cols[4] || "---").trim() || "---";
+      const docsRaw = (cols[5] || "").trim();
+      const docs = docsRaw && docsRaw !== "—" && docsRaw !== "-" ? docsRaw.split(",").map(s => s.trim()).filter(c => /^(R|L|C|D)\d{2}$|^IT-\d{2}$/.test(c)) : [];
+      const refs = (cols[6] || "").trim().replace(/^[—-]$/, "");
+      const obs = (cols[7] || "").trim().replace(/^[—-]$/, "");
+      // Only import items that generate documents OR are inspection points
+      newItems.push({
+        _key: "pit_" + Math.random().toString(36).slice(2, 10),
+        id, section: id.split(".").slice(0, -1).join(".") || id,
+        title, pointType: "R",
+        phases: { FAT: fat, TAA: taa, TAO: tao },
+        docs, refs, obs
+      });
+    });
+    if (newItems.length === 0) {
+      setToast("⚠️ Nenhum item válido encontrado. Copie as linhas do Excel (com colunas ID, Descrição, FAT, TAA, TAO, Documentos).");
+      return;
+    }
+    onSave({ ...project, pitItems: [...pitItems, ...newItems] });
+    setToast(`✅ ${newItems.length} itens importados` + (skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""));
+    setImporting(false);
+    setImportText("");
+  };
+
 
   // ── All doc codes referenced in this PIT (for matrix columns)
   const allDocCodes = [...new Set(pitItems.flatMap(it => it.docs || []))].sort();
@@ -5228,9 +5158,7 @@ function PITModule({
     style: {
       padding: 14
     }
-  }, showTour && /*#__PURE__*/React.createElement(FirstUseTour, {
-    onDone: () => setShowTour(false)
-  }), toast && /*#__PURE__*/React.createElement(Toast, {
+  }, toast && /*#__PURE__*/React.createElement(Toast, {
     msg: toast,
     onClose: () => setToast("")
   }), /*#__PURE__*/React.createElement("div", {
@@ -5362,9 +5290,15 @@ function PITModule({
     style: {
       opacity: .7
     }
-  }, s.l))))), hasPerm(user, "manage_pit") && !addingItem && !editItem && /*#__PURE__*/React.createElement(Btn, {
+  }, s.l))))), hasPerm(user, "manage_pit") && !addingItem && !editItem && !importing && /*#__PURE__*/React.createElement("div", {
+    style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }
+  }, /*#__PURE__*/React.createElement(Btn, {
     full: true,
-    big: true,
+    v: "s",
+    onClick: () => setImporting(true),
+    style: { padding: "12px 8px" }
+  }, "\uD83D\uDCC5 Importar do Excel"), /*#__PURE__*/React.createElement(Btn, {
+    full: true,
     v: "g",
     onClick: () => {
       setAddingItem(true);
@@ -5384,9 +5318,31 @@ function PITModule({
       });
     },
     style: {
-      marginBottom: 14
+      marginBottom: 0
     }
-  }, "\uFF0B Adicionar novo item ao PIT"), addingItem && /*#__PURE__*/React.createElement(PITItemForm, {
+  }, "\uFF0B Adicionar item")), importing && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { background: "#fff", borderRadius: 10, padding: 18, maxWidth: 480, width: "100%", maxHeight: "85vh", overflow: "auto" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 15, fontWeight: 800, color: "#1E3A5F", marginBottom: 6 }
+  }, "\uD83D\uDCC5 Importar PIT do Excel"), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: "#64748B", lineHeight: 1.5, marginBottom: 10 }
+  }, "No Excel, selecione as linhas do PIT (colunas: ID, Descri\u00E7\u00E3o, FAT, TAA, TAO, Documentos, Refer\u00EAncias, Obs), copie (Ctrl+C) e cole aqui (Ctrl+V). Linhas de t\u00EDtulo s\u00E3o ignoradas automaticamente."), /*#__PURE__*/React.createElement("textarea", {
+    value: importText,
+    onChange: e => setImportText(e.target.value),
+    placeholder: "Cole aqui as linhas copiadas do Excel...",
+    style: { width: "100%", height: 180, padding: 10, border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 11, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, marginTop: 10 }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    v: "x", onClick: () => { setImporting(false); setImportText(""); }, style: { flex: 1 }
+  }, "Cancelar"), /*#__PURE__*/React.createElement(Btn, {
+    onClick: doImport, style: { flex: 2 }
+  }, "Importar itens \u2192")))), addingItem && /*#__PURE__*/React.createElement(PITItemForm, {
     item: nItem,
     onChange: setNItem,
     title: "\u2795 Novo Item do PIT",
@@ -5679,18 +5635,13 @@ function PITModule({
           fontStyle: "italic",
           marginBottom: 6
         }
-      }, it.obs), (hasPerm(user, "fill_doc") || hasPerm(user, "manage_pit")) && /*#__PURE__*/React.createElement("div", {
+      }, it.obs), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 6,
-          marginTop: 4,
-          flexWrap: "wrap"
+          marginTop: 4
         }
-      }, hasPerm(user, "fill_doc") && /*#__PURE__*/React.createElement(Btn, {
-        sm: true,
-        v: "g",
-        onClick: () => onNewDocWithPIT && onNewDocWithPIT(it)
-      }, "＋ Criar doc"), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement(Btn, {
+      }, /*#__PURE__*/React.createElement(Btn, {
         sm: true,
         v: "s",
         onClick: () => {
@@ -5705,11 +5656,11 @@ function PITModule({
           });
           setAddingItem(false);
         }
-      }, "\u270F\uFE0F Editar"), hasPerm(user, "manage_pit") && /*#__PURE__*/React.createElement(Btn, {
+      }, "\u270F\uFE0F Editar"), /*#__PURE__*/React.createElement(Btn, {
         sm: true,
         v: "d",
         onClick: () => deleteItem(it._key || it.id)
-      }, "\uD83D\uDDD1 Excluir")));
+      }, "\uD83D\uDDD1 Remover")));
     }));
   })), editItem && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -6470,8 +6421,6 @@ function NewDoc({
   const [etapa, setEtapa] = useState(1);
   const [blocks, setBlocks] = useState([]);
   const [expanded, setExpanded] = useState({});
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
   const pitItems = project.pitItems || [];
   const pitCodes = [...new Set(pitItems.flatMap(it => it.docs || []))];
   const emittedApproved = docs.filter(d => d.pid === project.id && ["Aprovado", "PDF gerado"].includes(d.status)).map(d => d.code);
@@ -6538,16 +6487,14 @@ function NewDoc({
       return a;
     });
   };
-  const criar = async () => {
-    if (!f.code || blocks.length === 0 || creating) return;
-    setCreateError("");
-    setCreating(true);
+  const criar = () => {
+    if (!f.code || blocks.length === 0) return;
     const docNumber = generateDocNumber(project, f.code, docs);
     const sectionData = {};
     blocks.forEach(b => {
       sectionData[b.id] = initSectionData(b);
     });
-    const novoDoc = {
+    onCreate({
       ...f,
       id: "d" + uid(),
       pid: project.id,
@@ -6556,10 +6503,11 @@ function NewDoc({
       revisionHistory: [],
       status: "Rascunho",
       version: 1,
-      history: [{ from: "", to: "Rascunho", by: user?.name || "Usuário", at: new Date().toISOString(), note: "Documento criado a partir do configurador de blocos" }],
+      history: [],
       pitRefs,
       blocks,
       sectionData,
+      // legacy fields kept empty for safety
       sections: [],
       pit: [],
       meas: [],
@@ -6568,16 +6516,12 @@ function NewDoc({
       measLabel: "Valor",
       ncs: [],
       att: [],
-      concl: { result: "", opinion: "", sig: "" }
-    };
-    try {
-      await onCreate(novoDoc);
-    } catch (e) {
-      console.error("Falha ao criar documento:", e);
-      setCreateError("Não foi possível salvar no banco agora. O documento foi mantido como rascunho local; verifique a conexão, o Supabase ou as colunas da tabela documents.");
-    } finally {
-      setCreating(false);
-    }
+      concl: {
+        result: "",
+        opinion: "",
+        sig: ""
+      }
+    });
   };
   const BLK_ICON = {
     identificacao: "📋",
@@ -7105,16 +7049,7 @@ function NewDoc({
       color: "#64748B",
       marginTop: 4
     }
-  }, "Volte e selecione o documento novamente.")), createError && /*#__PURE__*/React.createElement(Card, {
-    style: {
-      marginTop: 10,
-      background: "#FEF2F2",
-      border: "1px solid #FCA5A5",
-      color: "#991B1B",
-      fontSize: 12,
-      fontWeight: 600
-    }
-  }, "⚠️ ", createError), /*#__PURE__*/React.createElement("div", {
+  }, "Volte e selecione o documento novamente.")), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       bottom: 0,
@@ -7138,11 +7073,11 @@ function NewDoc({
     full: true,
     big: true,
     onClick: criar,
-    disabled: blocks.length === 0 || creating,
+    disabled: blocks.length === 0,
     style: {
       flex: 2
     }
-  }, creating ? "⏳ Salvando..." : ["✅ Criar (", blocks.length, " blocos)"])));
+  }, "\u2705 Criar (", blocks.length, " blocos)")));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -7154,7 +7089,6 @@ function DocEditor({
   user,
   pitItems,
   onSave,
-  onDelete,
   onBack
 }) {
   const [d, sd] = useState(doc);
@@ -7167,7 +7101,6 @@ function DocEditor({
   const [cApprove, setCA] = useState(false);
   const [cReview, setCR] = useState(false);
   const [cNewRev, setCNR] = useState(false);
-  const [cDelete, setCDelete] = useState(false);
   const autoSaveRef = useRef(null);
   const isLocked = ["Aprovado", "PDF gerado"].includes(d.status);
   const up = patch => {
@@ -7228,7 +7161,7 @@ function DocEditor({
     } catch (e) {
       console.error("Falha ao salvar documento", e);
       setSaveStatus("offline");
-      setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
+      setToast("⚠️ Falha ao salvar no banco. Verifique conexão/Supabase.");
       return false;
     }
   };
@@ -7274,65 +7207,23 @@ function DocEditor({
     onNo: () => setCR(false)
   }), cNewRev && /*#__PURE__*/React.createElement(Confirm, {
     msg: `Criar Rev.${String((d.revision || 0) + 1).padStart(2, "0")}?`,
-    onYes: async () => {
-      const now = new Date().toISOString();
-      const nextRev = (d.revision || 0) + 1;
+    onYes: () => {
       const nr = {
         ...d,
         id: "d" + uid(),
-        revision: nextRev,
+        revision: (d.revision || 0) + 1,
         status: "Rascunho",
-        pdfGeneratedAt: null,
-        updatedAt: now,
-        createdAt: now,
-        concl: {
-          ...(d.concl || {}),
-          sig: ""
-        },
-        history: [{
-          from: d.status,
-          to: "Rascunho",
-          by: user.name,
-          at: now,
-          note: `Nova revisão criada a partir da Rev.${String(d.revision || 0).padStart(2, "0")}`
-        }],
+        history: [],
         revisionHistory: [...(d.revisionHistory || []), {
           rev: d.revision,
-          status: d.status,
-          at: now,
-          originalId: d.id
-        }],
-        _localOnly: false
+          at: new Date().toISOString()
+        }]
       };
-      setSaveStatus("saving");
-      try {
-        await onSave(nr);
-        sd(nr);
-        setDirty(false);
-        setSaveStatus("saved");
-        setToast(`✅ Rev.${String(nextRev).padStart(2, "0")} criada. Documento liberado para edição.`);
-        setCNR(false);
-        setTimeout(() => setSaveStatus("idle"), 3000);
-      } catch (e) {
-        console.error("new revision catch:", e);
-        setSaveStatus("offline");
-        setToast("⚠️ Não foi possível criar a nova revisão: " + (e?.message || "verifique console"));
-      }
+      onSave(nr);
+      sd(nr);
+      setCNR(false);
     },
     onNo: () => setCNR(false)
-  }), cDelete && /*#__PURE__*/React.createElement(Confirm, {
-    msg: `Excluir definitivamente ${d.docNumber} ${rev}?`,
-    onYes: async () => {
-      try {
-        if (onDelete) await onDelete(d.id);
-        setCDelete(false);
-        onBack();
-      } catch (e) {
-        console.error("delete from editor catch:", e);
-        setToast("⚠️ Não foi possível excluir: " + (e?.message || "verifique console"));
-      }
-    },
-    onNo: () => setCDelete(false)
   }));
 
   // ── LEGACY MODEL (docs antigos sem blocks[]) ──
@@ -8933,7 +8824,7 @@ function FirstAccess({
         id: authUser.id,
         auth_id: authUser.id,
         name: name.trim(),
-        email: authUser.email || emailFallback(authUser),
+        email: authUser.email,
         role: "Engenheiro",
         crea: crea.trim(),
         perms: ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -8942,7 +8833,7 @@ function FirstAccess({
       onComplete({
         id: authUser.id,
         name: name.trim(),
-        email: authUser.email || emailFallback(authUser),
+        email: authUser.email,
         role: "Engenheiro",
         crea: crea.trim(),
         perms: ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -9043,7 +8934,7 @@ function UserManager({
     setLoading(true);
     try {
       const arr = await supa.from("users").select(token);
-      if (Array.isArray(arr)) setUsers(arr.map(u => ({ ...u, email: emailFallback(u) })));
+      if (Array.isArray(arr)) setUsers(arr);
     } catch {}
     setLoading(false);
   };
@@ -9134,7 +9025,7 @@ function UserManager({
       color: "#64748B",
       marginTop: 2
     }
-  }, emailFallback(sel)), sel.crea && /*#__PURE__*/React.createElement("div", {
+  }, sel.email), sel.crea && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#94A3B8",
@@ -9166,7 +9057,7 @@ function UserManager({
       gap: 6,
       flexWrap: "wrap"
     }
-  }, ["Técnico", "Engenheiro", "Administrador"].map(r => /*#__PURE__*/React.createElement("button", {
+  }, APP_ROLES.map(r => /*#__PURE__*/React.createElement("button", {
     key: r,
     onClick: async () => {
       const u = {
@@ -9303,7 +9194,7 @@ function UserManager({
     label: "Cargo",
     value: inviteRole,
     onChange: setInviteRole,
-    options: ["Técnico", "Engenheiro", "Administrador"]
+    options: APP_ROLES
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#F0FDF4",
@@ -9375,7 +9266,7 @@ function UserManager({
       color: "#64748B",
       marginTop: 1
     }
-  }, emailFallback(u)), /*#__PURE__*/React.createElement("div", {
+  }, u.email), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#94A3B8",
@@ -11844,6 +11735,116 @@ function ProgressReport({
 // ═══════════════════════════════════════════════════════════════════
 // BOTTOM NAV
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// CATALOG MANAGER — biblioteca de códigos de documento da empresa
+// ═══════════════════════════════════════════════════════════════════
+function CatalogManager({ token, user }) {
+  const h = React.createElement;
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [editCode, setEditCode] = useState(null);
+  const [form, setForm] = useState({ code: "", type: "R", name: "", description: "" });
+  const [toast, setToast] = useState("");
+  const [filter, setFilter] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const arr = await supa.from("doc_catalog").select(token, "order=code.asc");
+      if (Array.isArray(arr)) setItems(arr);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    const code = form.code.trim().toUpperCase();
+    if (!code || !form.name.trim()) { setToast("⚠️ Código e nome são obrigatórios"); return; }
+    if (!/^(R|L|C|D)\d{2}$|^IT-\d{2}$/.test(code)) { setToast("⚠️ Formato: R01, L01, C01, D01 ou IT-06"); return; }
+    try {
+      const res = await supa.from("doc_catalog").upsert(token, {
+        code, type: form.type, name: form.name.trim(),
+        description: form.description.trim(), active: true,
+        created_by: user.name, updated_at: new Date().toISOString()
+      });
+      if (res?.error || res?.message) { setToast("⚠️ Erro: " + (res.message || "verifique o console")); console.error(res); return; }
+      // Atualiza MASTER_DOCS em memória
+      MASTER_DOCS[code] = { code, type: form.type, name: form.name.trim(), description: form.description.trim() };
+      setToast("✅ " + code + " salvo no catálogo");
+      setAdding(false); setEditCode(null);
+      setForm({ code: "", type: "R", name: "", description: "" });
+      load();
+    } catch (e) { setToast("⚠️ Erro de conexão"); }
+  };
+
+  const toggleActive = async (item) => {
+    try {
+      await supa.from("doc_catalog").upsert(token, { ...item, active: !(item.active !== false), updated_at: new Date().toISOString() });
+      if (item.active !== false) delete MASTER_DOCS[item.code];
+      else MASTER_DOCS[item.code] = { code: item.code, type: item.type, name: item.name, description: item.description || "" };
+      load();
+    } catch (e) { setToast("⚠️ Erro"); }
+  };
+
+  const typeColors = { R: "#3B82F6", L: "#0F766E", C: "#F59E0B", D: "#8B5CF6", IT: "#64748B" };
+  const filtered = items.filter(i => !filter || i.code.toLowerCase().includes(filter.toLowerCase()) || i.name.toLowerCase().includes(filter.toLowerCase()));
+  const grouped = {};
+  filtered.forEach(i => { (grouped[i.type] = grouped[i.type] || []).push(i); });
+
+  const inputStyle = { width: "100%", padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", outline: "none" };
+  const labelStyle = { display: "block", fontSize: 10, fontWeight: 700, color: "#475569", marginBottom: 3, textTransform: "uppercase" };
+
+  return h("div", { style: { padding: 14, paddingBottom: 80 } },
+    toast && h(Toast, { msg: toast, onClose: () => setToast("") }),
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+      h("h2", { style: { margin: 0, fontSize: 17, fontWeight: 800, color: "#1E3A5F" } }, "📚 Catálogo de Documentos"),
+      !adding && !editCode && h(Btn, { sm: true, onClick: () => { setAdding(true); setForm({ code: "", type: "R", name: "", description: "" }); } }, "+ Novo código")),
+    h("div", { style: { fontSize: 11, color: "#64748B", marginBottom: 10, lineHeight: 1.4 } },
+      "Códigos disponíveis para todos os projetos. Criar um código aqui o torna selecionável na criação de documentos e no PIT."),
+    (adding || editCode) && h(Card, { style: { marginBottom: 12, padding: 14, borderLeft: "3px solid #1E3A5F" } },
+      h("div", { style: { fontSize: 13, fontWeight: 700, color: "#1E3A5F", marginBottom: 10 } }, editCode ? "✏️ Editar " + editCode : "➕ Novo código"),
+      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        h("div", null,
+          h("label", { style: labelStyle }, "Código *"),
+          h("input", { value: form.code, disabled: !!editCode, onChange: e => setForm({ ...form, code: e.target.value }), placeholder: "Ex: R29", style: { ...inputStyle, background: editCode ? "#F1F5F9" : "#fff" } })),
+        h("div", null,
+          h("label", { style: labelStyle }, "Tipo"),
+          h("select", { value: form.type, onChange: e => setForm({ ...form, type: e.target.value }), style: inputStyle },
+            h("option", { value: "R" }, "R — Relatório"),
+            h("option", { value: "L" }, "L — Laudo"),
+            h("option", { value: "C" }, "C — Checklist"),
+            h("option", { value: "D" }, "D — Dossiê"),
+            h("option", { value: "IT" }, "IT — Instrução")))),
+      h("div", { style: { marginBottom: 8 } },
+        h("label", { style: labelStyle }, "Nome *"),
+        h("input", { value: form.name, onChange: e => setForm({ ...form, name: e.target.value }), placeholder: "Ex: Relatório de inspeção de solda", style: inputStyle })),
+      h("div", { style: { marginBottom: 10 } },
+        h("label", { style: labelStyle }, "Descrição (opcional)"),
+        h("textarea", { value: form.description, onChange: e => setForm({ ...form, description: e.target.value }), rows: 2, style: { ...inputStyle, resize: "vertical" } })),
+      h("div", { style: { display: "flex", gap: 8 } },
+        h(Btn, { v: "x", onClick: () => { setAdding(false); setEditCode(null); }, style: { flex: 1 } }, "Cancelar"),
+        h(Btn, { onClick: save, style: { flex: 2 } }, "💾 Salvar no catálogo"))),
+    h("input", { value: filter, onChange: e => setFilter(e.target.value), placeholder: "🔍 Buscar código ou nome...", style: { ...inputStyle, marginBottom: 12 } }),
+    loading ? h("div", { style: { textAlign: "center", padding: 30, color: "#94A3B8", fontSize: 13 } }, "Carregando catálogo...") :
+      ["R", "L", "C", "D", "IT"].filter(t => grouped[t]?.length).map(t =>
+        h("div", { key: t, style: { marginBottom: 14 } },
+          h("div", { style: { fontSize: 11, fontWeight: 800, color: typeColors[t], textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 } },
+            (t === "R" ? "Relatórios" : t === "L" ? "Laudos" : t === "C" ? "Checklists" : t === "D" ? "Dossiês" : "Instruções") + " (" + grouped[t].length + ")"),
+          grouped[t].map(item => {
+            const inactive = item.active === false;
+            return h(Card, { key: item.code, style: { padding: "9px 12px", marginBottom: 4, borderLeft: `3px solid ${typeColors[t]}`, opacity: inactive ? .5 : 1 } },
+              h("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 } },
+                h("span", { style: { fontSize: 12, fontWeight: 800, color: typeColors[t], minWidth: 42, flexShrink: 0 } }, item.code),
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("div", { style: { fontSize: 12, color: "#1E293B", lineHeight: 1.35 } }, item.name, inactive && h("span", { style: { fontSize: 9, color: "#EF4444", marginLeft: 6, fontWeight: 700 } }, "INATIVO")),
+                  item.description && h("div", { style: { fontSize: 10, color: "#94A3B8", marginTop: 2 } }, item.description)),
+                h("div", { style: { display: "flex", gap: 4, flexShrink: 0 } },
+                  h("button", { onClick: () => { setEditCode(item.code); setAdding(false); setForm({ code: item.code, type: item.type, name: item.name, description: item.description || "" }); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: 2 } }, "✏️"),
+                  h("button", { onClick: () => toggleActive(item), title: inactive ? "Reativar" : "Desativar", style: { background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: 2 } }, inactive ? "♻️" : "🚫"))));
+          }))));
+}
+
 function BNav({
   active,
   onChange,
@@ -11864,9 +11865,9 @@ function BNav({
     l: "PIT"
   }];
   if (hasPerm(user, "manage_templates")) tabs.push({
-    id: "templates",
-    ic: "⚙️",
-    l: "Templates"
+    id: "catalog",
+    ic: "📚",
+    l: "Catálogo"
   });
   if (hasPerm(user, "manage_users")) tabs.push({
     id: "users",
@@ -11985,12 +11986,19 @@ function App() {
       startRefreshInterval(refreshToken);
     }
     try {
-      const [projs, ds, tpls] = await Promise.all([supa.from("projects").select(token), supa.from("documents").select(token), supa.from("templates").select(token)]);
-      [projs, ds, tpls].forEach(res => {
-        if (res?.error) console.error("Supabase load error:", res.error);
-      });
-      if (projs?.error || ds?.error || tpls?.error) {
-        setToast("⚠️ Supabase retornou erro ao carregar dados. Veja o console do navegador.");
+      const [projs, ds, tpls, catalog] = await Promise.all([supa.from("projects").select(token), supa.from("documents").select(token), supa.from("templates").select(token), supa.from("doc_catalog").select(token).catch(() => null)]);
+      // ── Merge catalog from DB into MASTER_DOCS (DB é a fonte da verdade) ──
+      if (Array.isArray(catalog) && catalog.length > 0) {
+        const fromDb = {};
+        catalog.filter(c => c.active !== false).forEach(c => {
+          fromDb[c.code] = {
+            code: c.code,
+            type: c.type,
+            name: c.name,
+            description: c.description || ""
+          };
+        });
+        MASTER_DOCS = fromDb;
       }
       if (Array.isArray(projs)) {
         const sanitized = projs.map(p => ({
@@ -12032,7 +12040,8 @@ function App() {
       supa.auth.getUser(sess.token).then(async u => {
         if (u?.id) {
           try {
-            const profile = await findUserProfile(sess.token, u.id, u.email);
+            const arr = await supa.from("users").select(sess.token, `auth_id=eq.${u.id}`);
+            const profile = Array.isArray(arr) && (arr.find(x => x.auth_id === u.id) || arr.find(x => x.email === u.email));
             if (!profile || !profile.name || profile.status === "pending") {
               setTimeout(() => {
                 setFirstAccess({
@@ -12049,7 +12058,7 @@ function App() {
             const userObj = {
               id: u.id,
               name: profile.name,
-              email: profile.email || u.email,
+              email: u.email,
               role: profile.role || "Engenheiro",
               crea: profile.crea || "",
               perms: profile.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
@@ -12077,7 +12086,8 @@ function App() {
   const login = async userObj => {
     // Check if profile exists — if not, show FirstAccess screen
     try {
-      const profile = await findUserProfile(userObj.token, userObj.id, userObj.email);
+      const arr = await supa.from("users").select(userObj.token, `auth_id=eq.${userObj.id}`);
+      const profile = Array.isArray(arr) && (arr.find(u => u.auth_id === userObj.id) || arr.find(u => u.email === userObj.email));
       // Auto-fix: if profile found by email but auth_id missing, update it
       if (profile && !profile.auth_id) {
         supa.from("users").upsert(userObj.token, {
@@ -12101,7 +12111,6 @@ function App() {
       const fullUser = {
         ...userObj,
         ...profile,
-        email: profile?.email || userObj.email,
         token: userObj.token
       };
       setUser(fullUser);
@@ -12152,93 +12161,91 @@ function App() {
       console.error("saveProject catch:", e);
     }
   };
-  const documentPayload = d => ({
-    id: d.id,
-    pid: d.pid,
-    code: d.code || "",
-    "docNumber": d.docNumber || "",
-    name: d.name || "",
-    status: d.status || "Rascunho",
-    revision: d.revision || 0,
-    blocks: d.blocks || [],
-    "sectionData": d.sectionData || {},
-    sections: d.sections || [],
-    pit: d.pit || [],
-    meas: d.meas || [],
-    cont: d.cont || [],
-    vis: d.vis || [],
-    ncs: d.ncs || [],
-    att: d.att || [],
-    concl: d.concl || {},
-    "pitRefs": d.pitRefs || [],
-    history: d.history || [],
-    date: d.date || "",
-    resp: d.resp || "",
-    company: d.company || "",
-    crea: d.crea || "",
-    weather: d.weather || "",
-    objeto: d.objeto || "",
-    locRef: d.locRef || "",
-    updated_at: new Date().toISOString()
-  });
-  const backupLocalDoc = d => {
-    try {
-      const key = "qaqc_local_docs";
-      const arr = JSON.parse(localStorage.getItem(key) || "[]");
-      const clean = arr.filter(x => x.id !== d.id);
-      clean.push({ ...d, _localOnly: true, _localSavedAt: new Date().toISOString() });
-      localStorage.setItem(key, JSON.stringify(clean.slice(-50)));
-    } catch (err) {
-      console.warn("backupLocalDoc failed", err);
-    }
-  };
   const createDoc = async d => {
-    const token = tokenRef.current;
-    let persisted = false;
-    if (token) {
-      try {
-        const res = await supa.from("documents").upsert(token, documentPayload(d));
-        if (res?.error || res?.message) {
-          const detail = res?.error?.details ? ` — ${res.error.details}` : "";
-          throw new Error((res.error?.message || res.message || "Erro ao criar documento") + detail);
-        }
-        persisted = true;
-      } catch (e) {
-        console.error("createDoc catch:", e);
-        backupLocalDoc(d);
-        setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
-      }
-    } else {
-      console.error("No token");
-      backupLocalDoc(d);
-      setToast("⚠️ Sem sessão ativa. Rascunho mantido localmente.");
-    }
-    setDocs(p => p.some(x => x.id === d.id) ? p.map(x => x.id === d.id ? { ...d, _localOnly: !persisted } : x) : [...p, { ...d, _localOnly: !persisted }]);
+    setDocs(p => [...p, d]);
     setEditId(d.id);
     setScr("edit");
-    if (persisted) setToast("📄 " + d.docNumber + " criado e salvo!");
+    setToast("📄 " + d.docNumber + " criado!");
+    const token = tokenRef.current;
+    if (!token) {
+      console.error("No token");
+      return;
+    }
+    try {
+      const res = await supa.from("documents").upsert(token, {
+        id: d.id,
+        pid: d.pid,
+        code: d.code || "",
+        "docNumber": d.docNumber || "",
+        name: d.name || "",
+        status: d.status || "Rascunho",
+        revision: d.revision || 0,
+        blocks: d.blocks || [],
+        "sectionData": d.sectionData || {},
+        sections: d.sections || [],
+        pit: d.pit || [],
+        meas: d.meas || [],
+        cont: d.cont || [],
+        vis: d.vis || [],
+        ncs: d.ncs || [],
+        concl: d.concl || {},
+        "pitRefs": d.pitRefs || [],
+        history: d.history || [],
+        date: d.date || "",
+        resp: d.resp || "",
+        company: d.company || "",
+        crea: d.crea || "",
+        weather: d.weather || "",
+        objeto: d.objeto || "",
+        locRef: d.locRef || "",
+        updated_at: new Date().toISOString()
+      });
+      if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao criar documento");
+    } catch (e) {
+      console.error("createDoc catch:", e);
+      setDocs(p => p.filter(x => x.id !== d.id));
+      throw e;
+    }
   };
   const saveDoc = async d => {
     setDocs(p => p.map(x => x.id === d.id ? d : x));
     const token = tokenRef.current;
     if (!token) {
       console.error("No token");
-      backupLocalDoc(d);
-      setToast("⚠️ Sem sessão ativa. Alterações mantidas localmente.");
-      throw new Error("Sem sessão ativa");
+      return;
     }
     try {
-      const res = await supa.from("documents").upsert(token, documentPayload(d));
-      if (res?.error || res?.message) {
-        const detail = res?.error?.details ? ` — ${res.error.details}` : "";
-        throw new Error((res.error?.message || res.message || "Erro ao salvar documento") + detail);
-      }
-      setDocs(p => p.map(x => x.id === d.id ? { ...d, _localOnly: false } : x));
+      const res = await supa.from("documents").upsert(token, {
+        id: d.id,
+        pid: d.pid,
+        code: d.code || "",
+        "docNumber": d.docNumber || "",
+        name: d.name || "",
+        status: d.status || "Rascunho",
+        revision: d.revision || 0,
+        blocks: d.blocks || [],
+        "sectionData": d.sectionData || {},
+        sections: d.sections || [],
+        pit: d.pit || [],
+        meas: d.meas || [],
+        cont: d.cont || [],
+        vis: d.vis || [],
+        ncs: d.ncs || [],
+        concl: d.concl || {},
+        "pitRefs": d.pitRefs || [],
+        history: d.history || [],
+        date: d.date || "",
+        resp: d.resp || "",
+        company: d.company || "",
+        crea: d.crea || "",
+        weather: d.weather || "",
+        objeto: d.objeto || "",
+        locRef: d.locRef || "",
+        updated_at: new Date().toISOString()
+      });
+      if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao salvar documento");
     } catch (e) {
       console.error("saveDoc catch:", e);
-      backupLocalDoc(d);
-      setDocs(p => p.map(x => x.id === d.id ? { ...d, _localOnly: true } : x));
-      setToast("⚠️ Supabase não confirmou o salvamento: " + (e?.message || "verifique console"));
       throw e;
     }
   };
@@ -12447,8 +12454,7 @@ function App() {
     docs: docs,
     user: user,
     onSave: saveProject,
-    saveDoc: saveDoc,
-    onNewDocWithPIT: onNewDocWithPIT
+    saveDoc: saveDoc
   }), scr === "databook" && activeProject && /*#__PURE__*/React.createElement(DataBook, {
     project: activeProject,
     docs: docs,
@@ -12484,7 +12490,6 @@ function App() {
     user: user,
     pitItems: activeProject.pitItems || [],
     onSave: saveDoc,
-    onDelete: deleteDoc,
     onBack: () => {
       setScr("docs");
       setEditId(null);
@@ -12512,13 +12517,18 @@ function App() {
   }), scr === "templates" && hasPerm(user, "manage_templates") && /*#__PURE__*/React.createElement(TemplateEditor, {
     templates: templates,
     onSave: setTemplates
+  }), scr === "catalog" && hasPerm(user, "manage_templates") && /*#__PURE__*/React.createElement(CatalogManager, {
+    token: user.token,
+    user: user
   }), scr === "users" && hasPerm(user, "manage_users") && /*#__PURE__*/React.createElement(UserManager, {
     token: user.token,
     currentUser: user
   }), showBN && /*#__PURE__*/React.createElement(BNav, {
     active: scr === "proj-dash" ? "proj" : scr,
     onChange: s => {
-      if (s === "proj") setScr("proj");else if (activeProject) {
+      if (s === "proj") setScr("proj");else if (s === "catalog" || s === "users" || s === "templates") {
+        setScr(s);
+      } else if (activeProject) {
         setScr(s);
       } else setScr("proj");
     },
