@@ -4549,11 +4549,42 @@ function PITModule({
       emitted
     };
   };
+  // Ordenação natural: números numéricos, romanos por valor (i, ii, iii, iv...)
+  const romanVal = s => {
+    const map = { i: 1, v: 5, x: 10, l: 50, c: 100 };
+    const t = s.toLowerCase();
+    if (!/^[ivxlc]+$/.test(t)) return null;
+    let v = 0;
+    for (let j = 0; j < t.length; j++) {
+      const cur = map[t[j]], nxt = map[t[j + 1]] || 0;
+      v += cur < nxt ? -cur : cur;
+    }
+    return v;
+  };
+  const segVal = s => {
+    if (/^\d+$/.test(s)) return [0, parseInt(s, 10)];
+    const r = romanVal(s);
+    if (r !== null) return [1, r];
+    return [2, s.charCodeAt(0) || 0];
+  };
+  const idCompare = (a, b) => {
+    const pa = String(a).split("."), pb = String(b).split(".");
+    for (let j = 0; j < Math.max(pa.length, pb.length); j++) {
+      if (pa[j] === undefined) return -1;
+      if (pb[j] === undefined) return 1;
+      const [ta, va] = segVal(pa[j]), [tb, vb] = segVal(pb[j]);
+      if (ta !== tb) return ta - tb;
+      if (va !== vb) return va - vb;
+    }
+    return 0;
+  };
   const sections = {};
-  pitItems.forEach(it => {
+  [...pitItems].sort((a, b) => idCompare(a.id, b.id)).forEach(it => {
     if (!sections[it.section]) sections[it.section] = [];
     sections[it.section].push(it);
   });
+  const sectionKeysOrdered = Object.keys(sections).sort(idCompare);
+  const sectionTitles = project.pitSections || {};
   const atendidos = pitItems.filter(it => getItemStatus(it).status === "Atendido").length;
   const pctGeral = pitItems.length ? Math.round(atendidos / pitItems.length * 100) : 0;
   const saveItem = item => {
@@ -4608,37 +4639,47 @@ function PITModule({
     setToast("🗑 Removido");
   };
   const doImport = () => {
-    const rows = importText.split("\n").map(r => r.split("\t")).filter(r => r.length >= 2 && r[0].trim());
+    const rows = importText.split("\n").map(r => r.split("\t")).filter(r => r.length >= 2 && (r[0] || "").trim());
     const newItems = [];
+    const newSections = { ...(project.pitSections || {}) };
     let skipped = 0;
     rows.forEach(cols => {
       const id = (cols[0] || "").trim();
       const title = (cols[1] || "").trim();
-      // Skip headers and section titles
       if (!id || id.toLowerCase() === "id" || !title) { skipped++; return; }
-      if (title.toLowerCase().includes("apenas título") || (cols[6] || "").toLowerCase().includes("apenas título")) { skipped++; return; }
+      const allText = cols.join(" ").toLowerCase();
+      const isTitleRow = allText.includes("apenas título") || allText.includes("apenas titulo");
+      if (isTitleRow) {
+        // Linha de seção: guarda o título para exibir no cabeçalho do grupo
+        newSections[id] = title;
+        return;
+      }
       const fat = (cols[2] || "---").trim() || "---";
       const taa = (cols[3] || "---").trim() || "---";
       const tao = (cols[4] || "---").trim() || "---";
       const docsRaw = (cols[5] || "").trim();
-      const docs = docsRaw && docsRaw !== "—" && docsRaw !== "-" ? docsRaw.split(",").map(s => s.trim()).filter(c => /^(R|L|C|D)\d{2}$|^IT-\d{2}$/.test(c)) : [];
-      const refs = (cols[6] || "").trim().replace(/^[—-]$/, "");
-      const obs = (cols[7] || "").trim().replace(/^[—-]$/, "");
-      // Only import items that generate documents OR are inspection points
+      const docs = docsRaw && docsRaw !== "\u2014" && docsRaw !== "-" ? docsRaw.split(",").map(s => s.trim()).filter(c => /^(R|L|C|D)\d{2}$|^IT-\d{2}$/.test(c)) : [];
+      const refs = (cols[6] || "").trim().replace(/^[\u2014-]$/, "");
+      const obs = (cols[7] || "").trim().replace(/^[\u2014-]$/, "");
       newItems.push({
         _key: "pit_" + Math.random().toString(36).slice(2, 10),
-        id, section: id.split(".").slice(0, -1).join(".") || id,
-        title, pointType: "R",
+        id, title, pointType: "R",
         phases: { FAT: fat, TAA: taa, TAO: tao },
         docs, refs, obs
       });
     });
     if (newItems.length === 0) {
-      setToast("⚠️ Nenhum item válido encontrado. Copie as linhas do Excel (com colunas ID, Descrição, FAT, TAA, TAO, Documentos).");
+      setToast("\u26A0\uFE0F Nenhum item v\u00E1lido encontrado. Copie as linhas do Excel (colunas: ID, Descri\u00E7\u00E3o, FAT, TAA, TAO, Documentos).");
       return;
     }
-    onSave({ ...project, pitItems: [...pitItems, ...newItems] });
-    setToast(`✅ ${newItems.length} itens importados` + (skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""));
+    // Seção de cada item = prefixo mais longo entre os títulos de seção capturados
+    const sectionIds = Object.keys(newSections).sort((a, b) => b.length - a.length);
+    newItems.forEach(it => {
+      const match = sectionIds.find(sid => it.id.startsWith(sid + ".") || it.id === sid);
+      it.section = match || it.id.split(".").slice(0, -1).join(".") || it.id;
+    });
+    onSave({ ...project, pitItems: [...pitItems, ...newItems], pitSections: newSections });
+    setToast(`\u2705 ${newItems.length} itens importados em ${Object.keys(newSections).length} se\u00E7\u00F5es`);
     setImporting(false);
     setImportText("");
   };
@@ -5391,7 +5432,7 @@ function PITModule({
       color: "#94A3B8",
       padding: "2px 0"
     }
-  }, "\xB7 \u2705 aprovado \xB7 \uD83D\uDCDD emitido \xB7 \u2B1C pendente")), Object.entries(sections).map(([sec, items]) => {
+  }, "\xB7 \u2705 aprovado \xB7 \uD83D\uDCDD emitido \xB7 \u2B1C pendente")), sectionKeysOrdered.map(sec => { const items = sections[sec];
     const open = expanded[sec] !== false;
     const secPct = Math.round(items.filter(it => getItemStatus(it).status === "Atendido").length / items.length * 100);
     return /*#__PURE__*/React.createElement("div", {
@@ -5420,7 +5461,14 @@ function PITModule({
         fontWeight: 700,
         fontSize: 13
       }
-    }, sec), /*#__PURE__*/React.createElement("span", {
+    }, sec), sectionTitles[sec] && /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "rgba(255,255,255,.85)",
+        fontSize: 11,
+        marginLeft: 8,
+        fontWeight: 500
+      }
+    }, sectionTitles[sec].length > 60 ? sectionTitles[sec].slice(0, 60) + "\u2026" : sectionTitles[sec]), /*#__PURE__*/React.createElement("span", {
       style: {
         color: "rgba(255,255,255,.5)",
         fontSize: 11,
@@ -12159,6 +12207,7 @@ function App() {
         description: p.description || "",
         "pitItems": p.pitItems || [],
         "punchList": p.punchList || [],
+        "pitSections": p.pitSections || {},
         rfis: p.rfis || [],
         materials: p.materials || [],
         updated_at: new Date().toISOString()
@@ -12293,6 +12342,7 @@ function App() {
         description: p.description || "",
         "pitItems": p.pitItems || [],
         "punchList": p.punchList || [],
+        "pitSections": p.pitSections || {},
         rfis: p.rfis || [],
         materials: p.materials || [],
         updated_at: new Date().toISOString()
