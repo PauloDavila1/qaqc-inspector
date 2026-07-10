@@ -507,11 +507,18 @@ const ALL_PERMS = {
 const ROLE_DEFAULT_PERMS = {
   Técnico: ["fill_doc", "save_draft", "sign_doc", "generate_pdf", "manage_pit"],
   Supervisor: ["fill_doc", "save_draft", "sign_doc", "generate_pdf", "manage_pit"],
-  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "view_analytics", "manage_pit"],
+  Engenheiro: ["fill_doc", "save_draft", "send_review", "approve_doc", "sign_doc", "generate_pdf", "view_analytics", "manage_pit", "manage_projects", "manage_docs", "delete_doc", "manage_templates"],
   Gestor: Object.keys(ALL_PERMS),
   Administrador: Object.keys(ALL_PERMS)
 };
 const APP_ROLES = ["Técnico", "Supervisor", "Engenheiro", "Gestor"];
+const mergePerms = (stored, role) => {
+  let arr = stored;
+  if (typeof arr === "string") { try { arr = JSON.parse(arr); } catch { arr = []; } }
+  if (!Array.isArray(arr)) arr = [];
+  const defaults = ROLE_DEFAULT_PERMS[role] || [];
+  return [...new Set([...arr, ...defaults])];
+};
 const hasPerm = (user, p) => {
   if (user?.role === "Gestor" || user?.role === "Administrador") return true;
   let perms = user?.perms || [];
@@ -3401,7 +3408,7 @@ function Login({
         email: supaUser.email,
         role: profile?.role || "Engenheiro",
         crea: profile?.crea || "",
-        perms: profile?.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
+        perms: mergePerms(profile?.perms, profile?.role || "Engenheiro"),
         token,
         refreshToken: res.refresh_token || null
       };
@@ -12061,7 +12068,7 @@ function App() {
               email: u.email,
               role: profile.role || "Engenheiro",
               crea: profile.crea || "",
-              perms: profile.perms || ROLE_DEFAULT_PERMS["Engenheiro"],
+              perms: mergePerms(profile.perms, profile.role || "Engenheiro"),
               token: sess.token
             };
             setUser(userObj);
