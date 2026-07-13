@@ -4493,7 +4493,8 @@ function PITModule({
   docs,
   user,
   onSave,
-  saveDoc
+  saveDoc,
+  onNewDoc
 }) {
   const pitItems = project.pitItems || [];
   const [expanded, setExpanded] = useState({});
@@ -4905,6 +4906,156 @@ function PITModule({
   };
 
   // ── PENDING VIEW ──
+  // ═══ OBJETOS DO PROJETO — cadastro das partes físicas ═══
+  const saveObject = () => {
+    if (!objForm.name.trim()) { setToast("⚠️ Nome do objeto é obrigatório"); return; }
+    let next;
+    if (objForm.id) {
+      next = objects.map(o => o.id === objForm.id ? { ...o, name: objForm.name.trim(), category: objForm.category } : o);
+    } else {
+      next = [...objects, { id: "obj_" + Math.random().toString(36).slice(2, 9), name: objForm.name.trim(), category: objForm.category, exclusions: [] }];
+    }
+    onSave({ ...project, objects: next });
+    setObjForm(null);
+    setToast("✅ Objeto salvo");
+  };
+  const deleteObject = id => {
+    if (!confirm("Remover este objeto? Os documentos já emitidos não são afetados.")) return;
+    onSave({ ...project, objects: objects.filter(o => o.id !== id) });
+  };
+  const h_ = React.createElement;
+  const renderObjects = () => h_("div", null,
+    h_("div", { style: { fontSize: 11, color: "#64748B", lineHeight: 1.5, marginBottom: 10 } },
+      "Cadastre as partes físicas do projeto (Torre, Carport, Abrigo do Gerador, Base Civil...). A Matriz cruza cada item do PIT com cada objeto para controlar o atendimento e as não-aplicabilidades."),
+    hasPerm(user, "manage_pit") && !objForm && h_(Btn, { full: true, v: "g", onClick: () => setObjForm({ name: "", category: OBJ_CATEGORIES[0] }), style: { marginBottom: 12 } }, "＋ Cadastrar objeto"),
+    objForm && h_(Card, { style: { padding: 14, marginBottom: 12, borderLeft: "3px solid #1E3A5F" } },
+      h_("div", { style: { fontSize: 13, fontWeight: 700, color: "#1E3A5F", marginBottom: 10 } }, objForm.id ? "✏️ Editar objeto" : "➕ Novo objeto"),
+      h_("label", { style: { display: "block", fontSize: 10, fontWeight: 700, color: "#475569", marginBottom: 3, textTransform: "uppercase" } }, "Nome *"),
+      h_("input", { value: objForm.name, onChange: e => setObjForm({ ...objForm, name: e.target.value }), placeholder: "Ex: Torre Autoportante 60m", style: { width: "100%", padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 13, boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" } }),
+      h_("label", { style: { display: "block", fontSize: 10, fontWeight: 700, color: "#475569", marginBottom: 3, textTransform: "uppercase" } }, "Categoria"),
+      h_("select", { value: objForm.category, onChange: e => setObjForm({ ...objForm, category: e.target.value }), style: { width: "100%", padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 13, boxSizing: "border-box", marginBottom: 10, fontFamily: "inherit" } },
+        OBJ_CATEGORIES.map(c => h_("option", { key: c, value: c }, c))),
+      h_("div", { style: { display: "flex", gap: 8 } },
+        h_(Btn, { v: "x", onClick: () => setObjForm(null), style: { flex: 1 } }, "Cancelar"),
+        h_(Btn, { onClick: saveObject, style: { flex: 2 } }, "💾 Salvar"))),
+    objects.length === 0 && !objForm && h_(Card, { style: { textAlign: "center", padding: 24 } }, h_("p", { style: { color: "#94A3B8", fontSize: 12, margin: 0 } }, "Nenhum objeto cadastrado ainda")),
+    objects.map(o => {
+      const naCount = (o.exclusions || []).length;
+      const objDocs = docs.filter(d => d.pid === project.id && (d.objectId === o.id || d.objeto === o.name));
+      const objExt = extDocs.filter(x => x.objectId === o.id);
+      return h_(Card, { key: o.id, style: { padding: "11px 13px", marginBottom: 6, borderLeft: "3px solid #1E3A5F" } },
+        h_("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+          h_("div", { style: { flex: 1, minWidth: 0 } },
+            h_("div", { style: { fontSize: 13, fontWeight: 700, color: "#1E3A5F" } }, o.name),
+            h_("div", { style: { fontSize: 10, color: "#64748B", marginTop: 2 } }, o.category, " · ", objDocs.length, " doc(s) · ", objExt.length, " terceiro(s)", naCount > 0 ? ` · ${naCount} N/A` : "")),
+          hasPerm(user, "manage_pit") && h_("div", { style: { display: "flex", gap: 4, flexShrink: 0 } },
+            h_("button", { onClick: () => setObjForm({ id: o.id, name: o.name, category: o.category }), style: { background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 } }, "✏️"),
+            h_("button", { onClick: () => deleteObject(o.id), style: { background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 } }, "🗑️"))));
+    }));
+
+  // ═══ MATRIZ ITEM × OBJETO ═══
+  const itemKey = it => it._key || it.id;
+  const cellState = (it, obj) => {
+    const excl = (obj.exclusions || []).find(x => x.itemKey === itemKey(it));
+    if (excl) return { s: "na", label: "N/A", reason: excl.reason };
+    const cellDocs = docs.filter(d => d.pid === project.id && (d.objectId === obj.id || d.objeto === obj.name) && (it.docs || []).includes(d.code));
+    const ext = extDocs.filter(x => x.itemKey === itemKey(it) && x.objectId === obj.id);
+    if (cellDocs.some(d => ["Aprovado", "PDF gerado"].includes(d.status)) || ext.some(x => x.status === "verificado")) return { s: "ok", label: "✅" };
+    if (cellDocs.length > 0 || ext.some(x => x.status === "recebido")) return { s: "prog", label: "📝" };
+    if (ext.some(x => x.status === "aguardando")) return { s: "wait", label: "🏢" };
+    return { s: "pend", label: "⬜" };
+  };
+  const setNA = () => {
+    if (!naReason.trim()) { setToast("⚠️ Justificativa é obrigatória para N/A"); return; }
+    const { item, obj } = selCell;
+    const next = objects.map(o => o.id === obj.id ? { ...o, exclusions: [...(o.exclusions || []), { itemKey: itemKey(item), itemId: item.id, reason: naReason.trim(), by: user.name, at: new Date().toISOString() }] } : o);
+    onSave({ ...project, objects: next });
+    setSelCell(null); setNaReason("");
+    setToast("✅ N/A registrado com justificativa");
+  };
+  const removeNA = () => {
+    const { item, obj } = selCell;
+    const next = objects.map(o => o.id === obj.id ? { ...o, exclusions: (o.exclusions || []).filter(x => x.itemKey !== itemKey(item)) } : o);
+    onSave({ ...project, objects: next });
+    setSelCell(null);
+    setToast("↩️ N/A removido");
+  };
+  const saveExtDoc = () => {
+    if (!extForm.company.trim() || !extForm.number.trim()) { setToast("⚠️ Empresa e número do documento são obrigatórios"); return; }
+    const rec = {
+      id: "ext_" + Math.random().toString(36).slice(2, 9),
+      itemKey: itemKey(extForm.item), itemId: extForm.item.id,
+      objectId: extForm.obj.id, objectName: extForm.obj.name,
+      company: extForm.company.trim(), number: extForm.number.trim(),
+      date: extForm.date, status: extForm.status,
+      by: user.name, at: new Date().toISOString()
+    };
+    onSave({ ...project, extDocs: [...extDocs, rec] });
+    setExtForm(null); setSelCell(null);
+    setToast("✅ Documento de terceiro registrado");
+  };
+  const renderObjMatrix = () => {
+    if (objects.length === 0) return h_(Card, { style: { textAlign: "center", padding: 24 } },
+      h_("p", { style: { color: "#64748B", fontSize: 12, margin: "0 0 10px" } }, "A Matriz cruza itens do PIT com os objetos do projeto. Cadastre os objetos primeiro."),
+      h_(Btn, { sm: true, onClick: () => setViewMode("objects") }, "🏗️ Cadastrar objetos"));
+    const rows = [...pitItems].filter(it => (it.docs || []).length > 0).sort((a, b) => idCompare(a.id, b.id));
+    if (rows.length === 0) return h_(Card, { style: { textAlign: "center", padding: 24 } }, h_("p", { style: { color: "#94A3B8", fontSize: 12, margin: 0 } }, "Nenhum item do PIT gera documentos"));
+    const stateColors = { ok: "#DCFCE7", prog: "#FEF9C3", wait: "#E0E7FF", pend: "#fff", na: "#F1F5F9" };
+    return h_("div", null,
+      h_(Card, { style: { marginBottom: 10, padding: "9px 12px", background: "#F8FAFC" } },
+        h_("div", { style: { fontSize: 11, display: "flex", gap: 10, flexWrap: "wrap" } },
+          h_("span", null, "✅ Atendido"), h_("span", null, "📝 Em andamento"), h_("span", null, "🏢 Aguardando terceiro"), h_("span", null, "⬜ Pendente"), h_("span", null, "— N/A"))),
+      h_("div", { style: { fontSize: 10, color: "#64748B", marginBottom: 8 } }, "Toque numa célula para: criar documento, registrar relatório de terceiro ou marcar N/A."),
+      h_("div", { style: { overflowX: "auto", WebkitOverflowScrolling: "touch" } },
+        h_("table", { style: { borderCollapse: "collapse", fontSize: 11, minWidth: "100%" } },
+          h_("thead", null, h_("tr", null,
+            h_("th", { style: { background: "#1E3A5F", color: "#fff", padding: "6px 8px", textAlign: "left", fontSize: 10, border: "1px solid #2C5F8A", minWidth: 150, position: "sticky", left: 0, zIndex: 2 } }, "Item do PIT"),
+            objects.map(o => h_("th", { key: o.id, style: { background: "#1E3A5F", color: "#fff", padding: "6px 6px", textAlign: "center", fontSize: 9, border: "1px solid #2C5F8A", minWidth: 64, maxWidth: 90 } }, o.name)))),
+          h_("tbody", null, rows.map(it => h_("tr", { key: itemKey(it) },
+            h_("td", { style: { padding: "5px 8px", border: "1px solid #E2E8F0", background: "#F8FAFC", fontSize: 10, position: "sticky", left: 0, zIndex: 1 } },
+              h_("span", { style: { fontWeight: 800, color: "#1E3A5F" } }, it.id),
+              h_("div", { style: { color: "#64748B", fontSize: 9, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, it.title)),
+            objects.map(o => {
+              const st = cellState(it, o);
+              return h_("td", {
+                key: o.id,
+                onClick: () => hasPerm(user, "manage_pit") && setSelCell({ item: it, obj: o }),
+                title: st.reason || "",
+                style: { padding: "7px 4px", border: "1px solid #E2E8F0", textAlign: "center", cursor: "pointer", background: stateColors[st.s], fontSize: st.s === "na" ? 10 : 13, color: st.s === "na" ? "#94A3B8" : undefined, fontWeight: st.s === "na" ? 700 : 400 }
+              }, st.s === "na" ? "N/A" : st.label);
+            })))))),
+      selCell && !extForm && h_("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 210, display: "flex", alignItems: "flex-end", justifyContent: "center" }, onClick: () => { setSelCell(null); setNaReason(""); } },
+        h_("div", { style: { background: "#fff", borderRadius: "14px 14px 0 0", padding: 16, width: "100%", maxWidth: 520 }, onClick: e => e.stopPropagation() },
+          h_("div", { style: { fontSize: 12, fontWeight: 800, color: "#1E3A5F", marginBottom: 2 } }, selCell.item.id, " × ", selCell.obj.name),
+          h_("div", { style: { fontSize: 11, color: "#64748B", marginBottom: 12, lineHeight: 1.4 } }, selCell.item.title.slice(0, 110)),
+          cellState(selCell.item, selCell.obj).s === "na"
+            ? h_("div", null,
+                h_("div", { style: { fontSize: 11, color: "#475569", background: "#F1F5F9", borderRadius: 6, padding: "8px 10px", marginBottom: 10 } }, "N/A: ", cellState(selCell.item, selCell.obj).reason),
+                h_(Btn, { full: true, v: "x", onClick: removeNA }, "↩️ Remover N/A"))
+            : h_("div", null,
+                onNewDoc && h_(Btn, { full: true, onClick: () => { onNewDoc(selCell.item, selCell.obj); }, style: { marginBottom: 8 } }, "📄 Criar documento (interno)"),
+                h_(Btn, { full: true, v: "s", onClick: () => setExtForm({ item: selCell.item, obj: selCell.obj, company: "", number: "", date: new Date().toISOString().slice(0, 10), status: "recebido" }), style: { marginBottom: 8 } }, "🏢 Registrar relatório de terceiro"),
+                h_("div", { style: { borderTop: "1px solid #E2E8F0", paddingTop: 10, marginTop: 4 } },
+                  h_("label", { style: { display: "block", fontSize: 10, fontWeight: 700, color: "#475569", marginBottom: 4, textTransform: "uppercase" } }, "Ou marcar N/A — justificativa obrigatória"),
+                  h_("input", { value: naReason, onChange: e => setNaReason(e.target.value), placeholder: "Ex: estrutura 100% parafusada, sem soldas de campo", style: { width: "100%", padding: "8px 10px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 12, boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" } }),
+                  h_(Btn, { full: true, v: "x", onClick: setNA }, "🚫 Marcar N/A"))))),
+      extForm && h_("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 220, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } },
+        h_("div", { style: { background: "#fff", borderRadius: 10, padding: 16, width: "100%", maxWidth: 420 } },
+          h_("div", { style: { fontSize: 14, fontWeight: 800, color: "#1E3A5F", marginBottom: 2 } }, "🏢 Relatório de terceiro"),
+          h_("div", { style: { fontSize: 11, color: "#64748B", marginBottom: 10 } }, extForm.item.id, " × ", extForm.obj.name),
+          h_("input", { value: extForm.company, onChange: e => setExtForm({ ...extForm, company: e.target.value }), placeholder: "Empresa executora *", style: { width: "100%", padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 13, boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" } }),
+          h_("input", { value: extForm.number, onChange: e => setExtForm({ ...extForm, number: e.target.value }), placeholder: "Número do relatório/certificado *", style: { width: "100%", padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 13, boxSizing: "border-box", marginBottom: 8, fontFamily: "inherit" } }),
+          h_("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 } },
+            h_("input", { type: "date", value: extForm.date, onChange: e => setExtForm({ ...extForm, date: e.target.value }), style: { padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 12, fontFamily: "inherit" } }),
+            h_("select", { value: extForm.status, onChange: e => setExtForm({ ...extForm, status: e.target.value }), style: { padding: "9px 11px", border: "1.5px solid #CBD5E1", borderRadius: 6, fontSize: 12, fontFamily: "inherit" } },
+              h_("option", { value: "aguardando" }, "Aguardando recebimento"),
+              h_("option", { value: "recebido" }, "Recebido"),
+              h_("option", { value: "verificado" }, "Verificado pelo engenheiro"))),
+          h_("div", { style: { display: "flex", gap: 8 } },
+            h_(Btn, { v: "x", onClick: () => setExtForm(null), style: { flex: 1 } }, "Cancelar"),
+            h_(Btn, { onClick: saveExtDoc, style: { flex: 2 } }, "💾 Registrar")))));
+  };
+
   const renderPending = () => {
     const pending = pitItems.filter(it => {
       const {
@@ -5245,6 +5396,9 @@ function PITModule({
     id: "list",
     label: "📋 Lista"
   }, {
+    id: "objects",
+    label: "🏗️ Objetos"
+  }, {
     id: "matrix",
     label: "⊞ Matriz"
   }, {
@@ -5396,7 +5550,7 @@ function PITModule({
     title: "\u2795 Novo Item do PIT",
     onSave: item => saveItem(item),
     onCancel: () => setAddingItem(false)
-  }), viewMode === "matrix" && renderMatrix(), viewMode === "pending" && renderPending(), viewMode === "list" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }), viewMode === "objects" && renderObjects(), viewMode === "matrix" && renderObjMatrix(), viewMode === "pending" && renderPending(), viewMode === "list" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -6554,6 +6708,8 @@ function NewDoc({
       id: "d" + uid(),
       pid: project.id,
       docNumber,
+      objectId: initialPitItem?._objectId || null,
+      objeto: initialPitItem?._objectName || "",
       revision: 0,
       revisionHistory: [],
       status: "Rascunho",
@@ -7440,10 +7596,40 @@ function DocEditor({
       style: {
         color: "#EF4444"
       }
-    }, "*")), /*#__PURE__*/React.createElement("input", {
+    }, "*")), (project.objects || []).length > 0 && /*#__PURE__*/React.createElement("select", {
+      value: d.objectId || "",
+      onChange: e => {
+        const obj = (project.objects || []).find(o => o.id === e.target.value);
+        up(obj ? {
+          objectId: obj.id,
+          objeto: obj.name
+        } : {
+          objectId: null
+        });
+      },
+      disabled: isLocked,
+      style: {
+        width: "100%",
+        padding: "10px 12px",
+        border: "1.5px solid #93C5FD",
+        borderRadius: 6,
+        fontSize: 13,
+        fontFamily: "inherit",
+        outline: "none",
+        boxSizing: "border-box",
+        marginBottom: 6,
+        background: isLocked ? "#F1F5F9" : "#fff"
+      }
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u2014 Selecionar objeto cadastrado \u2014"), (project.objects || []).map(o => /*#__PURE__*/React.createElement("option", {
+      key: o.id,
+      value: o.id
+    }, o.name, " (", o.category, ")"))), /*#__PURE__*/React.createElement("input", {
       value: d.objeto || "",
       onChange: e => up({
-        objeto: e.target.value
+        objeto: e.target.value,
+        objectId: null
       }),
       placeholder: "Ex: Bloco de funda\xE7\xE3o B-12 \xB7 Estrutura met\xE1lica cobertura \xB7 SPDA principal",
       disabled: isLocked,
@@ -12208,6 +12394,8 @@ function App() {
         "pitItems": p.pitItems || [],
         "punchList": p.punchList || [],
         "pitSections": p.pitSections || {},
+        "objects": p.objects || [],
+        "extDocs": p.extDocs || [],
         rfis: p.rfis || [],
         materials: p.materials || [],
         updated_at: new Date().toISOString()
@@ -12253,6 +12441,7 @@ function App() {
         crea: d.crea || "",
         weather: d.weather || "",
         objeto: d.objeto || "",
+        "objectId": d.objectId || null,
         locRef: d.locRef || "",
         updated_at: new Date().toISOString()
       });
@@ -12296,6 +12485,7 @@ function App() {
         crea: d.crea || "",
         weather: d.weather || "",
         objeto: d.objeto || "",
+        "objectId": d.objectId || null,
         locRef: d.locRef || "",
         updated_at: new Date().toISOString()
       });
@@ -12343,6 +12533,8 @@ function App() {
         "pitItems": p.pitItems || [],
         "punchList": p.punchList || [],
         "pitSections": p.pitSections || {},
+        "objects": p.objects || [],
+        "extDocs": p.extDocs || [],
         rfis: p.rfis || [],
         materials: p.materials || [],
         updated_at: new Date().toISOString()
@@ -12507,6 +12699,10 @@ function App() {
     onPDF: id => nav("pdf", id),
     onDelete: deleteDoc
   }), scr === "pit" && activeProject && /*#__PURE__*/React.createElement(PITModule, {
+    onNewDoc: (it, obj) => {
+      setNewDocPitItem(obj ? { ...it, _objectId: obj.id, _objectName: obj.name } : it);
+      setScr("new-doc");
+    },
     project: activeProject,
     docs: docs,
     user: user,
