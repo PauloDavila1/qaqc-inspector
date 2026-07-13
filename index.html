@@ -4517,7 +4517,14 @@ function PITModule({
     obs: ""
   });
   const [toast, setToast] = useState("");
-  const [viewMode, setViewMode] = useState("list"); // "list" | "matrix" | "pending"
+  const [viewMode, setViewMode] = useState("list"); // "list" | "matrix" | "pending" | "objects"
+  const objects = project.objects || [];
+  const extDocs = project.extDocs || [];
+  const [objForm, setObjForm] = useState(null);
+  const [selCell, setSelCell] = useState(null);
+  const [extForm, setExtForm] = useState(null);
+  const [naReason, setNaReason] = useState("");
+  const OBJ_CATEGORIES = ["Estrutura Metálica", "Base Civil / Fundação", "Elétrica", "SPDA / Aterramento", "Telecom", "Edificação", "Outro"];
   const myDocs = docs.filter(d => d.pid === project.id);
   const getItemStatus = item => {
     if (!item.docs || item.docs.length === 0) return {
