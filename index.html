@@ -12479,7 +12479,9 @@ function App() {
     } catch (e) {
       console.error("createDoc catch:", e);
       setDocs(p => p.filter(x => x.id !== d.id));
-      throw e;
+      setEditId(null);
+      setScr("proj-dash");
+      setToast("⚠️ Documento NÃO foi gravado no banco: " + String(e.message || e).slice(0, 140));
     }
   };
   const saveDoc = async d => {
@@ -12522,6 +12524,7 @@ function App() {
       if (res?.error || res?.message) throw new Error(res.error?.message || res.message || "Erro ao salvar documento");
     } catch (e) {
       console.error("saveDoc catch:", e);
+      setToast("⚠️ Falha ao salvar no banco: " + String(e.message || e).slice(0, 140));
       throw e;
     }
   };
