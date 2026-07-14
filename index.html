@@ -4987,6 +4987,14 @@ function PITModule({
     setSelCell(null);
     setToast("↩️ N/A removido");
   };
+  const removeExtDoc = xid => {
+    if (!confirm("Remover este registro de terceiro?")) return;
+    onSave({ ...project, extDocs: extDocs.filter(x => x.id !== xid) });
+    setToast("🗑️ Registro removido");
+  };
+  const updateExtStatus = (xid, status) => {
+    onSave({ ...project, extDocs: extDocs.map(x => x.id === xid ? { ...x, status } : x) });
+  };
   const saveExtDoc = () => {
     if (!extForm.company.trim() || !extForm.number.trim()) { setToast("⚠️ Empresa e número do documento são obrigatórios"); return; }
     const rec = {
@@ -5021,7 +5029,7 @@ function PITModule({
           h_("tbody", null, rows.map(it => h_("tr", { key: itemKey(it) },
             h_("td", { style: { padding: "5px 8px", border: "1px solid #E2E8F0", background: "#F8FAFC", fontSize: 10, position: "sticky", left: 0, zIndex: 1 } },
               h_("span", { style: { fontWeight: 800, color: "#1E3A5F" } }, it.id),
-              h_("div", { style: { color: "#64748B", fontSize: 9, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, it.title)),
+              h_("div", { style: { color: "#64748B", fontSize: 9, maxWidth: 170, lineHeight: 1.35, whiteSpace: "normal" } }, it.title)),
             objects.map(o => {
               const st = cellState(it, o);
               return h_("td", {
@@ -5034,12 +5042,27 @@ function PITModule({
       selCell && !extForm && h_("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 210, display: "flex", alignItems: "flex-end", justifyContent: "center" }, onClick: () => { setSelCell(null); setNaReason(""); } },
         h_("div", { style: { background: "#fff", borderRadius: "14px 14px 0 0", padding: 16, width: "100%", maxWidth: 520 }, onClick: e => e.stopPropagation() },
           h_("div", { style: { fontSize: 12, fontWeight: 800, color: "#1E3A5F", marginBottom: 2 } }, selCell.item.id, " × ", selCell.obj.name),
-          h_("div", { style: { fontSize: 11, color: "#64748B", marginBottom: 12, lineHeight: 1.4 } }, selCell.item.title.slice(0, 110)),
+          h_("div", { style: { fontSize: 11, color: "#64748B", marginBottom: 12, lineHeight: 1.4 } }, selCell.item.title),
           cellState(selCell.item, selCell.obj).s === "na"
             ? h_("div", null,
                 h_("div", { style: { fontSize: 11, color: "#475569", background: "#F1F5F9", borderRadius: 6, padding: "8px 10px", marginBottom: 10 } }, "N/A: ", cellState(selCell.item, selCell.obj).reason),
                 h_(Btn, { full: true, v: "x", onClick: removeNA }, "↩️ Remover N/A"))
             : h_("div", null,
+                (() => {
+                  const cellExt = extDocs.filter(x => x.itemKey === itemKey(selCell.item) && x.objectId === selCell.obj.id);
+                  if (cellExt.length === 0) return null;
+                  return h_("div", { style: { marginBottom: 10 } },
+                    h_("div", { style: { fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase", marginBottom: 5 } }, "🏢 Terceiros registrados nesta célula"),
+                    cellExt.map(x => h_("div", { key: x.id, style: { display: "flex", alignItems: "center", gap: 6, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "7px 9px", marginBottom: 4 } },
+                      h_("div", { style: { flex: 1, minWidth: 0 } },
+                        h_("div", { style: { fontSize: 11, fontWeight: 700, color: "#1E3A5F" } }, x.company, " · ", x.number),
+                        h_("div", { style: { fontSize: 9, color: "#94A3B8" } }, x.date || "")),
+                      h_("select", { value: x.status, onChange: e => updateExtStatus(x.id, e.target.value), style: { fontSize: 10, padding: "4px 5px", border: "1px solid #CBD5E1", borderRadius: 5, fontFamily: "inherit" } },
+                        h_("option", { value: "aguardando" }, "Aguardando"),
+                        h_("option", { value: "recebido" }, "Recebido"),
+                        h_("option", { value: "verificado" }, "Verificado")),
+                      h_("button", { onClick: () => removeExtDoc(x.id), style: { background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2, flexShrink: 0 } }, "🗑️"))));
+                })(),
                 onNewDoc && h_(Btn, { full: true, onClick: () => { onNewDoc(selCell.item, selCell.obj); }, style: { marginBottom: 8 } }, "📄 Criar documento (interno)"),
                 h_(Btn, { full: true, v: "s", onClick: () => setExtForm({ item: selCell.item, obj: selCell.obj, company: "", number: "", date: new Date().toISOString().slice(0, 10), status: "recebido" }), style: { marginBottom: 8 } }, "🏢 Registrar relatório de terceiro"),
                 h_("div", { style: { borderTop: "1px solid #E2E8F0", paddingTop: 10, marginTop: 4 } },
